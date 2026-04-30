@@ -17,6 +17,14 @@
 - **暗色主题**：基于 customtkinter 的现代化暗色 UI
 - **控制台隐藏**：PyInstaller 打包后默认隐藏终端窗口（在程序目录创建 `debug_mode` 文件可显示）
 
+## 运行截图
+
+![](./README.assets/screenshot-1.png)
+
+![](./README.assets/screenshot-2.png)
+
+![](./README.assets/screenshot-3.png)
+
 ## 目录结构要求
 
 程序需要指向包含以下结构的游戏目录：
