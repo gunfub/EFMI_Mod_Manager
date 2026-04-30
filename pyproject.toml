@@ -1,0 +1,23 @@
+[project]
+name = "efmi-mod-manager"
+version = "1.0.0"
+description = "EFMI Mod Manager - Windows PC Mod 管理器，通过移动文件夹来启用/禁用 Mod"
+requires-python = ">=3.8"
+dependencies = [
+    "customtkinter>=5.2.0",
+    "Pillow>=9.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pip>=24.0",
+    "pyinstaller>=6.0",
+]
+
+[tool.pyinstaller]
+# PyInstaller 打包配置（可选，也可在命令行直接传参）
+name = "EFMI_Mod_Manager"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
