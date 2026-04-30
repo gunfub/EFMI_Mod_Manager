@@ -278,9 +278,13 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | 方法 | 说明 |
 |------|------|
 | `_build_ui()` | 构建全部 UI：顶栏（标题/路径/刷新/选择）、工具栏（选择/操作/分组）、Mod 列表可滚动区域、A-Z 侧边栏、底部状态栏、进度条 |
-| `_build_alphabet_bar(parent)` | 构建 A-Z 跳转侧边栏占位控件 |
-| `_rebuild_alphabet_bar()` | 重建字母侧边栏按钮（支持中文拼音首字母索引：英文 A-Z + 中文拼音首字母 + '#' 其他） |
-| `_scroll_to_letter(letter)` | 滚动到指定字母开头的第一个 Mod |
+| `_build_alphabet_bar(parent)` | 构建一级 A-Z 跳转侧边栏占位控件（仅分组级跳转） |
+| `_rebuild_alphabet_bar()` | 重建一级 A-Z 侧边栏按钮：按分组名首字母（支持中文拼音），点击跳转到对应分组标题。底部有未分组专用按钮 |
+| `_build_group_mini_alpha_bar(content_frame, gname, mods, notes)` | 在分组内容区右侧构建该组的迷你 A-Z 二级索引栏，仅显示该组 Mod 实际存在的首字母 |
+| `_scroll_to_mini_letter(letter, alpha_index)` | 滚动到组内迷你索引中指定字母对应的第一个 Mod |
+| `_scroll_to_group(letter)` | 滚动到一级索引中指定字母对应的第一个分组标题 |
+| `_scroll_to_ungrouped()` | 滚动到未分组标题 |
+| `_scroll_to_widget(widget)` | 将可滚动区域滚动到指定 widget 可见 |
 | `_get_sort_key(display)` (static) | 返回 `(sort_key, display_lower)` 元组用于排序；中文 → 拼音首字母，英文 → 自身首字母，无拼音则归入 `'#'` |
 | `_get_index_letter(display)` (static) | 返回显示名的索引字母（大写 A-Z 或 `'#'`）；中文通过 pypinyin 获取拼音首字母 |
 | `_font(base_size, weight=None)` | 根据当前 DPI 缩放返回 `CTkFont` |

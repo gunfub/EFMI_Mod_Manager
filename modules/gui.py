@@ -58,8 +58,14 @@ class ModManagerApp:
         self._group_first_mod = {}  # group_name -> first mod name (for A-Z scroll)
         self._mod_to_group = {}  # mod_name -> group_name
         self._mod_rows = {}  # mod_name -> row widgets dict
-        self._alphabet_index = {}  # letter -> first mod_name
         self._preview_ctk_images = {}  # mod_name -> CTkImage
+        # 分组级 A-Z 索引（全局右侧栏，跳转到分组标题）
+        self._primary_alpha_index = {}  # letter -> 第一个匹配的分组名
+        self._primary_alpha_buttons = {}  # letter -> button
+        self._ungrouped_btn = None  # 未分组专用索引按钮
+        self._sorted_group_names = []  # 按名称排序后的分组名列表（未分组除外）
+        # 每个分组内部的迷你 A-Z 索引栏
+        self._group_mini_alpha_bars = {}  # group_name -> {"frame", "buttons", "index"}
 
         # 动态 DPI 缩放
         self._dpi_scale = self._get_dpi_scale_factor()
@@ -215,7 +221,7 @@ class ModManagerApp:
         self.scroll_frame = ctk.CTkScrollableFrame(body, label_text="")
         self.scroll_frame.pack(side="left", fill="both", expand=True, padx=(0, 0), pady=0)
 
-        # A-Z 侧边栏
+        # A-Z 侧边栏（仅分组级跳转）
         self._build_alphabet_bar(body)
 
         # ---- 底部状态栏 ----
@@ -244,21 +250,24 @@ class ModManagerApp:
         )
 
     def _build_alphabet_bar(self, parent):
-        """构建 A-Z 快速跳转侧边栏"""
-        alpha_frame = ctk.CTkFrame(parent, width=28, corner_radius=0,
-                                   fg_color=("gray90", "gray14"))
-        alpha_frame.pack(side="right", fill="y", padx=0, pady=0)
-        alpha_frame.pack_propagate(False)
+        """构建分组级 A-Z 快速跳转侧边栏（仅跳转分组标题）"""
+        self._alpha_container = ctk.CTkFrame(parent, width=28, corner_radius=0,
+                                              fg_color=("gray90", "gray14"))
+        self._alpha_container.pack(side="right", fill="y", padx=0, pady=0)
+        self._alpha_container.pack_propagate(False)
 
-        self._alpha_frame = alpha_frame
+        # 一级索引栏（分组名首字母 A-Z）
+        self._primary_frame = ctk.CTkFrame(self._alpha_container, width=22,
+                                            corner_radius=0,
+                                            fg_color=("gray90", "gray14"))
+        self._primary_frame.place(x=3, y=0, relheight=1.0)
+
+        # 保留旧引用兼容
+        self._alpha_frame = self._primary_frame
         self._alpha_buttons = {}
 
-        placeholder = ctk.CTkLabel(
-            alpha_frame, text="", font=self._font(6)
-        )
-        placeholder.pack()
-
-        self._alpha_placeholder = placeholder
+        # 占位
+        ctk.CTkLabel(self._primary_frame, text="", font=self._font(6)).pack()
 
     # ---- 中文拼音索引支持 ----
     @staticmethod
@@ -324,67 +333,166 @@ class ModManagerApp:
         return '#'
 
     def _rebuild_alphabet_bar(self):
-        """根据当前 Mod 重建字母侧边栏，支持英文+中文拼音混合索引"""
-        for widget in self._alpha_frame.winfo_children():
+        """重建一级 A-Z 索引：分组名首字母（全局右侧栏）"""
+        # ---- 清理 ----
+        for widget in self._primary_frame.winfo_children():
             widget.destroy()
-        self._alpha_buttons.clear()
-        self._alphabet_index.clear()
+        self._primary_alpha_index.clear()
+        self._primary_alpha_buttons.clear()
+        self._ungrouped_btn = None
 
-        notes = ConfigManager.get_mod_notes()
-        # 排序：中文 Mod 按拼音排序，英文按字母排序，其他归末尾
-        sorted_mods = sorted(
-            self.mods_data,
-            key=lambda m: self._get_sort_key(
-                (notes.get(m["name"], "") or m["name"]).strip()
-            )
-        )
+        # ---- 收集分组名 ----
+        groups = ConfigManager.get_mod_groups()
 
-        for mod in sorted_mods:
-            display = (notes.get(mod["name"], "") or mod["name"]).strip()
-            if display:
-                index_letter = self._get_index_letter(display)
-                if index_letter not in self._alphabet_index:
-                    self._alphabet_index[index_letter] = mod["name"]
+        all_groups_set = set()
+        assigned = set()
+        valid_names = {m["name"] for m in self.mods_data}
+        for gname, mods in groups.items():
+            if any(m in valid_names for m in mods):
+                all_groups_set.add(gname)
+                for mod_name in mods:
+                    assigned.add(mod_name)
+        unassigned = [m for m in self.mods_data if m["name"] not in assigned]
+        has_ungrouped = bool(unassigned)
 
+        # 排序分组名（除"未分组"），按分组名全词典序
+        sorted_groups = sorted(all_groups_set, key=lambda g: self._get_sort_key(g))
+        self._sorted_group_names = sorted_groups
+
+        # 建一级索引
+        for gname in sorted_groups:
+            letter = self._get_index_letter(gname)
+            if letter not in self._primary_alpha_index:
+                self._primary_alpha_index[letter] = gname
+
+        # 渲染一级按钮
         all_letters = [chr(i) for i in range(ord('A'), ord('Z') + 1)]
-        if '#' in self._alphabet_index:
-            all_letters.insert(0, '#')
-
         for letter in all_letters:
-            has_mod = letter in self._alphabet_index
+            if letter not in self._primary_alpha_index:
+                continue
             btn = ctk.CTkButton(
-                self._alpha_frame,
+                self._primary_frame,
                 text=letter,
                 width=22,
                 height=20,
                 font=self._font(9),
                 corner_radius=2,
-                fg_color=("gray95", "gray14") if not has_mod else ("gray70", "gray25"),
-                text_color="gray50" if not has_mod else ("gray20", "gray90"),
-                hover_color=("gray60", "gray35") if has_mod else ("gray95", "gray14"),
-                command=lambda l=letter: self._scroll_to_letter(l) if l in self._alphabet_index else None,
+                fg_color=("gray70", "gray25"),
+                text_color=("gray20", "gray90"),
+                hover_color=("gray60", "gray35"),
+                command=lambda l=letter: self._scroll_to_group(l),
             )
             btn.pack(pady=1, padx=3)
-            self._alpha_buttons[letter] = btn
+            self._primary_alpha_buttons[letter] = btn
 
-    def _scroll_to_letter(self, letter):
-        """滚动到对应字母的第一个 Mod"""
-        if letter not in self._alphabet_index:
+        # 未分组专用按钮（最底部）
+        if has_ungrouped:
+            ungrouped_btn = ctk.CTkButton(
+                self._primary_frame,
+                text="📁",
+                width=22,
+                height=20,
+                font=self._font(9),
+                corner_radius=2,
+                fg_color=("gray70", "gray25"),
+                text_color=("gray20", "gray90"),
+                hover_color=("gray60", "gray35"),
+                command=self._scroll_to_ungrouped,
+            )
+            ungrouped_btn.pack(side="bottom", pady=1, padx=3)
+            self._ungrouped_btn = ungrouped_btn
+
+        # 占位
+        ctk.CTkLabel(self._primary_frame, text="", font=self._font(6)).pack(side="bottom")
+
+    # ============================================================
+    # 分组内部迷你 A-Z 索引栏
+    # ============================================================
+    def _build_group_mini_alpha_bar(self, content_frame, gname, mods, notes):
+        """在分组内容区右侧构建该组的迷你 A-Z 索引栏"""
+        mini_bar = ctk.CTkFrame(content_frame, width=22, corner_radius=0,
+                                fg_color=("gray88", "gray16"))
+        mini_bar.pack(side="right", fill="y", padx=(2, 0), pady=2)
+        mini_bar.pack_propagate(False)
+
+        # 建索引
+        alpha_index = {}  # letter -> first mod_name
+        for mod in mods:
+            display = (notes.get(mod["name"], "") or mod["name"]).strip()
+            if display:
+                letter = self._get_index_letter(display)
+                if letter not in alpha_index:
+                    alpha_index[letter] = mod["name"]
+
+        buttons = {}
+        if alpha_index:
+            for letter in sorted(alpha_index.keys()):
+                btn = ctk.CTkButton(
+                    mini_bar,
+                    text=letter,
+                    width=18,
+                    height=16,
+                    font=self._font(7),
+                    corner_radius=2,
+                    fg_color=("gray70", "gray25"),
+                    text_color=("gray20", "gray90"),
+                    hover_color=("gray60", "gray35"),
+                    command=lambda l=letter, idx=alpha_index: self._scroll_to_mini_letter(l, idx),
+                )
+                btn.pack(pady=1, padx=2)
+                buttons[letter] = btn
+        else:
+            # 至少有一个占位，保持栏可见
+            ctk.CTkLabel(mini_bar, text="", font=self._font(6)).pack()
+
+        self._group_mini_alpha_bars[gname] = {
+            "frame": mini_bar,
+            "buttons": buttons,
+            "index": alpha_index,
+        }
+
+    def _scroll_to_mini_letter(self, letter, alpha_index):
+        """滚动到迷你索引中指定字母对应的第一个 Mod"""
+        if letter not in alpha_index:
             return
-        mod_name = self._alphabet_index[letter]
+        mod_name = alpha_index[letter]
         row_info = self._mod_rows.get(mod_name)
         if not row_info:
             return
         widget = row_info.get("row_frame")
         if widget and widget.winfo_exists():
-            canvas = self.scroll_frame._parent_canvas
-            bbox = canvas.bbox("all")
-            if bbox:
-                widget_y = widget.winfo_rooty() - canvas.winfo_rooty()
-                total_h = bbox[3] - bbox[1]
-                if total_h > 0:
-                    fraction = max(0, min(1, widget_y / total_h))
-                    canvas.yview_moveto(fraction)
+            self._scroll_to_widget(widget)
+
+    # ============================================================
+    # 跳转方法
+    # ============================================================
+    def _scroll_to_group(self, letter):
+        """滚动到对应字母的第一个分组标题"""
+        if letter not in self._primary_alpha_index:
+            return
+        gname = self._primary_alpha_index[letter]
+        header = self._group_headers.get(gname)
+        if header and header.winfo_exists():
+            self._scroll_to_widget(header)
+
+    def _scroll_to_ungrouped(self):
+        """滚动到未分组标题"""
+        header = self._group_headers.get("未分组")
+        if header and header.winfo_exists():
+            self._scroll_to_widget(header)
+
+    def _scroll_to_widget(self, widget):
+        """将 scrollable frame 滚动到指定 widget 可见"""
+        if not widget or not widget.winfo_exists():
+            return
+        canvas = self.scroll_frame._parent_canvas
+        bbox = canvas.bbox("all")
+        if bbox:
+            widget_y = widget.winfo_rooty() - canvas.winfo_rooty()
+            total_h = bbox[3] - bbox[1]
+            if total_h > 0:
+                fraction = max(0, min(1, widget_y / total_h))
+                canvas.yview_moveto(fraction)
 
     # ============================================================
     # 选择文件夹 / 刷新
@@ -438,8 +546,10 @@ class ModManagerApp:
         self._group_first_mod.clear()
         self._mod_to_group.clear()
         self._mod_rows.clear()
-        self._alphabet_index.clear()
+        self._primary_alpha_index.clear()
+        self._sorted_group_names.clear()
         self._preview_ctk_images.clear()
+        self._group_mini_alpha_bars.clear()
         self.mods_data = []
 
         label = ctk.CTkLabel(
@@ -451,7 +561,7 @@ class ModManagerApp:
         self.status_label.configure(text="")
 
     # ============================================================
-    # 渲染 Mod 列表（带分组、折叠、复选框）
+    # 渲染 Mod 列表（带分组、折叠、复选框、迷你 A-Z 索引栏）
     # ============================================================
     def _render_mod_list(self):
         for widget in self.scroll_frame.winfo_children():
@@ -464,6 +574,7 @@ class ModManagerApp:
         self._mod_to_group.clear()
         self._mod_rows.clear()
         self._preview_ctk_images.clear()
+        self._group_mini_alpha_bars.clear()
 
         if not self.mods_data:
             ctk.CTkLabel(
@@ -473,7 +584,6 @@ class ModManagerApp:
             return
 
         groups = ConfigManager.get_mod_groups()
-        order = ConfigManager.get_group_order()
         collapsed = set(ConfigManager.get_collapsed_groups())
         notes = ConfigManager.get_mod_notes()
         images = ConfigManager.get_mod_images()
@@ -481,23 +591,37 @@ class ModManagerApp:
         mod_by_name = {m["name"]: m for m in self.mods_data}
         assigned = set()
 
-        ordered_groups = [g for g in order if g in groups]
-        other_groups = [g for g in groups if g not in ordered_groups]
-
-        for gname in ordered_groups + other_groups:
-            mods_in_group = []
-            if gname not in groups:
-                continue
-            for mod_name in groups[gname]:
-                if mod_name in mod_by_name:
-                    mods_in_group.append(mod_by_name[mod_name])
-                    assigned.add(mod_name)
+        # 收集所有有 mod 的分组（排除空分组），按分组名 A-Z 排序
+        active_groups = []
+        for gname, mods_in_group_names in groups.items():
+            mods_in_group = [mod_by_name[n] for n in mods_in_group_names if n in mod_by_name]
             if mods_in_group:
-                self._create_group_section(gname, mods_in_group, notes, images,
-                                           is_collapsed=(gname in collapsed))
+                active_groups.append((gname, mods_in_group))
+                for m in mods_in_group:
+                    assigned.add(m["name"])
 
+        # 分组名 A-Z 排序（全词典序）
+        active_groups.sort(key=lambda x: self._get_sort_key(x[0]))
+
+        # 渲染分组
+        for gname, mods_in_group in active_groups:
+            # 组内按备注名排序
+            mods_in_group.sort(
+                key=lambda m: self._get_sort_key(
+                    (notes.get(m["name"], "") or m["name"]).strip()
+                )
+            )
+            self._create_group_section(gname, mods_in_group, notes, images,
+                                       is_collapsed=(gname in collapsed))
+
+        # 未分组永远是置底的
         unassigned = [m for m in self.mods_data if m["name"] not in assigned]
         if unassigned:
+            unassigned.sort(
+                key=lambda m: self._get_sort_key(
+                    (notes.get(m["name"], "") or m["name"]).strip()
+                )
+            )
             self._create_group_section("未分组", unassigned, notes, images,
                                        is_collapsed=("未分组" in collapsed))
 
@@ -547,7 +671,7 @@ class ModManagerApp:
 
         self._group_headers[gname] = header
 
-        # ---- 分组内容区 ----
+        # ---- 分组内容区（水平布局：左栏 Mod 行 + 右栏迷你 A-Z 索引）----
         content = ctk.CTkFrame(self.scroll_frame, fg_color=("gray95", "gray14"))
         if not is_collapsed:
             content.pack(fill="x", padx=2, pady=0)
@@ -557,10 +681,17 @@ class ModManagerApp:
         if mods:
             self._group_first_mod[gname] = mods[0]["name"]
 
+        # 左栏：Mod 行
+        left_frame = ctk.CTkFrame(content, fg_color=("gray95", "gray14"))
+        left_frame.pack(side="left", fill="both", expand=True)
+
         for mod in mods:
             self._mod_to_group[mod["name"]] = gname
-            self._create_mod_row(content, mod, notes.get(mod["name"], ""),
+            self._create_mod_row(left_frame, mod, notes.get(mod["name"], ""),
                                  images.get(mod["name"], ""))
+
+        # 右栏：该组的迷你 A-Z 索引
+        self._build_group_mini_alpha_bar(content, gname, mods, notes)
 
         collapse_btn.configure(
             command=lambda g=gname, btn=collapse_btn:
