@@ -2,6 +2,8 @@
 
 基于 `customtkinter` 的 Windows PC Mod 管理器，通过移动文件夹的方式来启用/禁用 Mod。
 
+> **重要声明**：EFMI Mod Manager 不负责 Mod 的加载、解析或注入。Mod 的加载与运行时逻辑由 EFMI 在游戏启动阶段完成。本程序仅提供一个图形化的前端界面，用于快捷地启用或禁用 Mod —— 其底层实现仅是将 Mod 文件夹在 `Mods`（已启用）与 `Disabled_Mods`（已禁用）目录之间移动，以控制 EFMI 启动时应当加载哪些 Mod。本程序不修改任何 Mod 内容，也不参与 EFMI 的运行时行为。
+
 ## 功能特性
 
 - **Mod 管理**：扫描 `Mods` 和 `Disabled_Mods` 文件夹，一键切换启用/禁用
@@ -10,7 +12,7 @@
 - **自定义备注**：为每个 Mod 设置自定义显示名称
 - **预览图片**：为每个 Mod 设置预览缩略图，点击可全屏查看原图
 - **README 检测**：自动识别 Mod 文件夹中的 `README.md` / `README.txt` 等文件，一键打开
-- **A-Z 快速跳转**：侧边栏字母索引，快速定位 Mod
+- **多语言 A-Z 快速跳转**：侧边栏字母索引支持英文、中文拼音首字母（可选依赖 `pypinyin`），混合排序快速定位
 - **DPI 动态缩放**：自适应 Windows 高 DPI 显示器
 - **暗色主题**：基于 customtkinter 的现代化暗色 UI
 - **控制台隐藏**：PyInstaller 打包后默认隐藏终端窗口（在程序目录创建 `debug_mode` 文件可显示）
@@ -39,9 +41,10 @@
 - Python 3.8+
 - customtkinter
 - Pillow（可选，用于预览图功能）
+- pypinyin（可选，用于中文拼音首字母索引）
 
 ```bash
-pip install customtkinter Pillow
+pip install customtkinter Pillow pypinyin
 ```
 
 #### 直接运行
@@ -81,7 +84,7 @@ pip install uv
 uv sync
 
 # 或手动安装
-uv pip install customtkinter Pillow
+uv pip install customtkinter Pillow pypinyin
 ```
 
 #### 直接运行
@@ -135,7 +138,7 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 
 ### 5. 快速跳转
 
-右侧 A-Z 侧边栏可点击任意字母，快速滚动到以该字母开头的 Mod（按备注名或原始名排序）。
+右侧 A-Z 侧边栏可点击任意字母，快速滚动到以该字母开头的 Mod（按备注名或原始名排序）。安装 `pypinyin` 后，中文 Mod 会按拼音首字母参与混合排序和索引（例如"中文Mod"出现在"Z"下），未安装则按原始字符排序。
 
 ## 配置文件
 
@@ -147,6 +150,26 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 - `mod_groups`：分组数据
 - `group_order`：分组排序
 - `collapsed_groups`：已折叠的分组列表
+
+## 代码结构
+
+项目采用模块化架构，核心代码拆分到 `modules/` 包中：
+
+```
+mod_manager.py              ← 入口文件，启动初始化
+modules/
+├── __init__.py             ← 包声明
+├── config.py               ← 配置管理（JSON 读写、分组、备注、预览图）
+├── mod_ops.py              ← Mod 操作（扫描、移动、验证、README 检测）
+├── console_setup.py        ← 控制台/警告管理（stderr 重定向、pkg_resources 警告抑制）
+└── gui.py                  ← GUI 主界面（customtkinter 窗口、事件处理、批量操作）
+```
+
+**模块调用链：**  
+`mod_manager.py` → `console_setup.py`（启动阶段）  
+`mod_manager.py` → `gui.py` → `config.py` + `mod_ops.py`
+
+详细文档见 [modules/modules.md](modules/modules.md)。
 
 ## 技术栈
 
