@@ -7,6 +7,7 @@ Mod 扫描、启用/禁用（文件夹移动）、README 检测等。
 import os
 import shutil
 from modules.config import README_NAMES
+from modules.i18n import t
 
 
 class ModManager:
@@ -18,12 +19,12 @@ class ModManager:
     def validate(self):
         """返回 (is_valid, error_message, created_disabled)"""
         if not self.game_path:
-            return False, "未设置游戏路径", False
+            return False, t("validate.no_path", "未设置游戏路径"), False
         if not os.path.isdir(self.game_path):
-            return False, "游戏路径不存在", False
+            return False, t("validate.path_not_exist", "游戏路径不存在"), False
         # Mods 文件夹必须存在
         if not os.path.isdir(self.mods_dir):
-            return False, "游戏路径中未找到 Mods 文件夹，请确认路径是否正确", False
+            return False, t("validate.no_mods_dir", "游戏路径中未找到 Mods 文件夹，请确认路径是否正确"), False
         # Disabled_Mods 不存在则自动创建
         created_disabled = False
         if not os.path.isdir(self.disabled_dir):
@@ -69,9 +70,9 @@ class ModManager:
             src = os.path.join(self.disabled_dir, mod_name)
             dst = os.path.join(self.mods_dir, mod_name)
         if not os.path.exists(src):
-            raise FileNotFoundError(f"Mod 文件夹不存在: {src}")
+            raise FileNotFoundError(t("toggle.src_not_found", "Mod 文件夹不存在: {path}").format(path=src))
         if os.path.exists(dst):
-            raise FileExistsError(f"目标位置已存在同名 Mod: {dst}")
+            raise FileExistsError(t("toggle.dst_exists", "目标位置已存在同名 Mod: {path}").format(path=dst))
         self._move_with_progress(src, dst, progress_callback)
 
     def toggle_mods_batch(self, mod_list, enable, progress_callback=None,
@@ -82,7 +83,8 @@ class ModManager:
             if mod["enabled"] == enable:
                 results.append((mod["name"], True, ""))
                 if progress_callback:
-                    progress_callback(idx + 1, total_mods, f"{mod['name']} (已处于目标状态)")
+                    progress_callback(idx + 1, total_mods,
+                                      t("progress.already_state", "{name} (已处于目标状态)").format(name=mod['name']))
                 continue
             try:
                 self.toggle_mod(mod["name"], mod["enabled"], file_progress_callback)
@@ -106,12 +108,12 @@ class ModManager:
                 except OSError:
                     pass
         if progress_callback:
-            progress_callback(0, total_files, total_bytes, "准备移动...")
+            progress_callback(0, total_files, total_bytes, t("progress.preparing", "准备移动..."))
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         try:
             os.rename(src, dst)
             if progress_callback:
-                progress_callback(total_files, total_files, total_bytes, "完成！")
+                progress_callback(total_files, total_files, total_bytes, t("progress.complete", "完成！"))
             return
         except OSError:
             pass
@@ -127,10 +129,10 @@ class ModManager:
                 copied_files += 1
                 if progress_callback and total_files > 0:
                     progress_callback(copied_files, total_files, 0,
-                                      f"移动中... {copied_files}/{total_files} 个文件")
+                                      t("progress.moving", "移动中... {copied}/{total} 个文件").format(copied=copied_files, total=total_files))
         shutil.rmtree(src)
         if progress_callback:
-            progress_callback(total_files, total_files, total_bytes, "完成！")
+            progress_callback(total_files, total_files, total_bytes, t("progress.complete", "完成！"))
 
     def open_mod_folder(self, mod_name, enabled):
         base = self.mods_dir if enabled else self.disabled_dir

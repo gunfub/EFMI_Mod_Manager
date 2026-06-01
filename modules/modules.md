@@ -11,8 +11,9 @@
 3. [modules/config.py — 配置管理](#modulesconfigpy--配置管理)
 4. [modules/mod_ops.py — Mod 操作](#modulesmod_opspy--mod-操作)
 5. [modules/console_setup.py — 控制台与启动设置](#modulesconsole_setuppy--控制台与启动设置)
-6. [modules/gui.py — GUI 主界面](#modulesguipy--gui-主界面)
-7. [调用流程图](#调用流程图)
+6. [modules/i18n.py — 多语言](#modulesi18npy--多语言)
+7. [modules/gui.py — GUI 主界面](#modulesguipy--gui-主界面)
+8. [调用流程图](#调用流程图)
 
 ---
 
@@ -22,8 +23,9 @@
 mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
   │
   ├── modules/console_setup.py   ← 控制台/警告管理（最早导入）
+  ├── modules/i18n.py            ← 多语言（GUI 加载前初始化）
   └── modules/gui.py             ← 主窗口 UI（导入 customtkinter）
-        ├── modules/config.py    ← 配置读写
+        ├── modules/config.py    ← 配置读写（含语言设置）
         └── modules/mod_ops.py   ← Mod 扫描/移动
 ```
 
@@ -31,6 +33,7 @@ mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
 - 入口文件 `mod_manager.py` 是所有 import 的调度的唯一入口。
 - 其他模块之间无循环依赖：`config` ← `mod_ops` → `gui` ← everything。
 - `console_setup.py` 必须在 `import customtkinter` **之前**调用。
+- `i18n.py` 必须在 `import gui` **之前**初始化，确保 GUI 构建时语言已就绪。
 
 ---
 
@@ -92,7 +95,7 @@ mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
 
 | 方法 | 说明 |
 |------|------|
-| `get_mod_images()` | 返回 `{mod_name: image_path, ...}` |
+| `get_mod_images()` | 返回 `{mod_name: image_path, ...}`（路径可为相对路径，相对于 Mod 文件夹） |
 | `set_mod_image(mod_name, image_path)` | 设置/清除单个 Mod 的预览图路径 |
 
 #### 分组管理
@@ -112,16 +115,25 @@ mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
 |------|------|
 | `cleanup_mod_data(valid_mod_names)` | 清理失效的 Mod 数据——扫描后调用，移除已不存在的 Mod 对应的备注、预览图、分组引用。同步清理 `group_order` 中不存在的分组名 |
 
+#### 语言设置
+
+| 方法 | 说明 |
+|------|------|
+| `get_language()` | 返回配置中的语言设置，默认 `"auto"` |
+| `set_language(lang)` | 设置语言（`"auto"`, `"zh"`, `"en"` 等）并保存 |
+
 ### 配置文件结构 (`mod_manager_config.json`)
 
 ```json
 {
+  "language": "auto",
   "game_path": "D:/Games/MyGame",
   "mod_notes": {
     "mod_abc": "My Custom Name"
   },
   "mod_images": {
-    "mod_abc": "D:/Images/preview.png"
+    "mod_abc": "screenshot.png",
+    "mod_xyz": "D:/Pictures/preview.png"
   },
   "mod_groups": {
     "UI Mods": ["mod_a", "mod_b"],
@@ -242,6 +254,94 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 ---
 
+## modules/i18n.py — 多语言
+
+### 职责
+
+提供多语言支持：系统语言自动检测、JSON 翻译文件加载、运行时语言切换。中文为源代码语言（不依赖翻译文件），其他语言通过 `locales/xx.json` 翻译。
+
+### 公共函数
+
+| 函数 | 说明 |
+|------|------|
+| `init_i18n()` | 初始化全局 i18n 单例，返回 `I18n` 实例 |
+| `get_i18n()` | 获取全局 i18n 单例（未初始化时自动创建） |
+| `t(key, zh_default)` | 快捷翻译函数，等效于 `get_i18n().t(key, zh_default)` |
+
+### 类：`I18n`
+
+单例模式，管理多语言状态。
+
+#### 构造与初始化
+
+| 方法 | 说明 |
+|------|------|
+| `__init__()` | 扫描 `locales/` 目录，自动发现所有 `.json` 翻译文件。检测系统语言并加载 |
+
+#### 语言控制
+
+| 方法/属性 | 说明 |
+|------|------|
+| `set_language(lang)` | 设置语言：`"auto"`（自动检测）/ `"zh"` / `"en"` 等。返回 `True` 表示语言实际变化 |
+| `t(key, zh_default)` | 获取翻译文本。`key` 为点号分隔 JSON 路径（如 `"top.subtitle"`），`zh_default` 为中文回退值 |
+| `on_language_changed(callback)` | 注册语言变更回调（`callback()` 无参数） |
+| `lang` (property) | 用户设置的语言代码（`"auto"`, `"zh"`, `"en"`） |
+| `effective_lang` (property) | 实际生效的语言代码（自动检测模式下为系统语言或降级值） |
+| `available` (property) | 所有可用的语言代码列表（`locales/` 中发现的 `.json` 文件） |
+
+#### 系统语言检测
+
+内部函数 `_detect_system_language()`：
+1. 通过 Windows `GetUserDefaultUILanguage` API 获取 UI 语言 ID
+2. 主语言 ID `0x04` → `"zh"`；`0x09` → `"en"`；`0x11` → `"ja"`；`0x12` → `"ko"`
+3. 降级到 Python `locale.getdefaultlocale()` 再做一次检测
+4. 都失败则返回 `None`
+
+#### 语言降级策略
+
+```
+用户设置 "auto":
+  → 系统检测到 zh → effective = "zh"（跳过 JSON，直接返回中文）
+  → 系统检测到 en → 有 en.json → effective = "en"（查 JSON）
+  → 系统检测到 ja → 有 ja.json → effective = "ja"（查 JSON）
+  → 系统检测到 ko → 有 ko.json → effective = "ko"（查 JSON）
+  → 系统检测失败   → effective = "en"
+
+用户设置 "zh":
+  → effective = "zh"（跳过 JSON）
+
+用户设置 "en":
+  → effective = "en"（查 en.json）
+  → en.json 加载失败 → 全部降级回中文
+```
+
+#### 翻译文件格式 (`locales/xx.json`)
+
+```json
+{
+  "top": {
+    "subtitle": "|  Mod Manager",
+    "refresh": "🔄 Refresh"
+  },
+  "dialog": {
+    "toggle_confirm": "Are you sure you want to {action} mod \"{name}\"?"
+  }
+}
+```
+
+- 键名用点路径组织，与 `t(key, zh_default)` 的 `key` 参数对应
+- 支持 `str.format(**kwargs)` 占位符
+- JSON 中缺失的键自动降级回 `zh_default`
+
+### 被调用于
+
+- `mod_manager.py`（`init_i18n()` 在 GUI 加载前调用）
+- `modules/gui.py`（`from modules.i18n import t, get_i18n`）
+- `modules/mod_ops.py`（`from modules.i18n import t`）
+- `modules/config.py`（间接，不直接引用但提供 `get_language()`/`set_language()`）
+
+---
+
 ## modules/gui.py — GUI 主界面
 
 ### 职责
@@ -255,6 +355,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 - `pypinyin`（可选，中文 Mod 拼音首字母索引；`HAS_PYPINYIN` 标志控制）
 - `modules.config.ConfigManager` + `modules.config.README_LABELS`
 - `modules.mod_ops.ModManager`
+- `modules.i18n`（`t()` 翻译函数 + `get_i18n()` 语言管理器）
 
 ### 类：`ModManagerApp`
 
@@ -289,6 +390,16 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | `_get_index_letter(display)` (static) | 返回显示名的索引字母（大写 A-Z 或 `'#'`）；中文通过 pypinyin 获取拼音首字母 |
 | `_font(base_size, weight=None)` | 根据当前 DPI 缩放返回 `CTkFont` |
 | `_get_dpi_scale_factor()` | 通过 Windows API 获取 DPI 缩放因子 |
+
+#### 多语言（私有方法）
+
+| 方法 | 说明 |
+|------|------|
+| `LANG_NATIVE` (class attr) | `dict` | 语言代码 → 原生名称 映射（`"zh"→"中文"`, `"en"→"English"`, `"ja"→"日本語"`, `"ko"→"한국어"`） |
+| `_lang_menu_display()` | 返回当前语言的菜单显示文本（如 `"中文"` / `"English"`） |
+| `_lang_menu_values()` | 从 `LANG_NATIVE` 动态生成下拉菜单选项列表 |
+| `_on_language_change(display_value)` | 语言下拉切换事件：保存到 ConfigManager → 更新 i18n → 调用 `_apply_language()` 刷新全部 UI |
+| `_apply_language()` | 更新顶栏、工具栏、标题等静态 UI 文本 + 重新渲染 Mod 列表 |
 
 #### 数据流（私有方法）
 
@@ -328,7 +439,8 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 | 方法 | 说明 |
 |------|------|
-| `_set_preview_image(mod)` | 选择预览图片并保存 |
+| `_resolve_preview_path(mod_path, stored_path)` (static) | 解析预览图实际路径。相对路径拼到 `mod_path` 后；绝对路径若文件不存在，尝试交换 `Mods\` / `Disabled_Mods\` 以适配 Mod 开关后的位置变化 |
+| `_set_preview_image(mod)` | 选择预览图片：若图片在 Mod 文件夹内 → 存相对路径；否则存绝对路径 |
 | `_clear_preview_image(mod)` | 清除 Mod 的预览图 |
 | `_show_full_image(image_path)` | 点击缩略图 → 弹出独立窗口全屏查看原图（≤屏幕 60%） |
 | `_edit_note(mod)` | 编辑 Mod 备注（显示名称） |
@@ -375,8 +487,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │ 2. redirect_stderr_to_null()       ← console_setup.py        │
 │ 3. suppress_pkg_resources_warning() ← console_setup.py       │
 │ 4. setup_console_visibility(_APP_DIR) ← console_setup.py     │
-│ 5. import ModManagerApp            ← gui.py                  │
-│ 6. main() → ModManagerApp().run()                            │
+│ 5. init_i18n() + set_language()    ← i18n.py + config.py     │
+│ 6. import ModManagerApp            ← gui.py                  │
+│ 7. main() → ModManagerApp().run()                            │
 └──────────────────────────────────────────────────────────────┘
                            │
                            ▼
@@ -385,7 +498,8 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │                                                              │
 │ __init__():                                                  │
 │   ├── _build_ui()           ← 构建全部 UI 控件               │
-│   │   └── _build_alphabet_bar() ← A-Z 侧边栏                 │
+│   │   ├── _build_alphabet_bar() ← A-Z 侧边栏                 │
+│   │   └── CTkOptionMenu     ← 语言切换下拉菜单               │
 │   └── _load_config_and_refresh() ← 首次加载                  │
 │                                                              │
 │ _refresh():                                                  │
@@ -398,6 +512,13 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │   │                     → _create_mod_row()                  │
 │   ├── _update_stats()                                        │
 │   └── _rebuild_alphabet_bar()                                │
+│                                                              │
+│ 语言切换:                                                    │
+│   ├── _on_language_change() → ConfigManager.set_language()   │
+│   │                        → I18n.set_language()             │
+│   │                        → _apply_language()               │
+│   │                            ├── 更新静态 UI 文本          │
+│   │                            └── _refresh()（重建 Mod 列表）│
 │                                                              │
 │ 用户操作:                                                    │
 │   ├── 开关切换 → _on_switch_toggled()                        │
@@ -421,9 +542,15 @@ mod_manager.py ─────┤
     gui.py ────→ config.py
        │
        ↓
-   mod_ops.py ──→ config.py (仅 README_NAMES)
+    mod_ops.py ──→ config.py (仅 README_NAMES)
+
+    gui.py ──→ i18n.py
+mod_manager.py ──→ i18n.py
+  mod_ops.py ──→ i18n.py
+  i18n.py  ──→ locales/*.json
 ```
 
-- `gui.py` 同时依赖 `config.py` 和 `mod_ops.py`
-- `mod_ops.py` 仅从 `config.py` 导入 `README_NAMES` 常量
+- `gui.py` 同时依赖 `config.py`、`mod_ops.py`、`i18n.py`
+- `mod_ops.py` 从 `config.py` 导入 `README_NAMES` 常量，从 `i18n.py` 导入 `t()` 翻译函数
 - `console_setup.py` 无内部依赖，只被 `mod_manager.py` 调用
+- `mod_manager.py` 在步骤 5 初始化 `i18n.py`（接在 `console_setup.py` 之后、`gui.py` 之前）

@@ -1,0 +1,120 @@
+{
+  "app": {
+    "title": "EFMI Mod Manager"
+  },
+  "top": {
+    "subtitle": "|  Mod Manager",
+    "refresh": "🔄 Refresh",
+    "browse": "📁 Browse",
+    "no_folder": "No folder selected"
+  },
+  "toolbar": {
+    "select": "Select:",
+    "select_all": "Select All",
+    "invert": "Invert",
+    "deselect": "Deselect",
+    "actions": "Actions:",
+    "batch_enable": "Batch Enable",
+    "batch_disable": "Batch Disable",
+    "new_group": "➕ New Group",
+    "manage_groups": "✏️ Manage Groups"
+  },
+  "mod_list": {
+    "empty": "No mod folders found",
+    "empty_state": "Please select a game directory that contains a Mods folder first",
+    "ungrouped": "Ungrouped",
+    "arrow_collapsed": "▶",
+    "arrow_expanded": "▼",
+    "count_suffix": " {count} mod(s)",
+    "status_enabled": "Enabled",
+    "status_disabled": "Disabled"
+  },
+  "group_dialog": {
+    "title_create": "New Group",
+    "prompt_name": "Enter group name:",
+    "already_exists": "Already exists",
+    "already_exists_msg": "Group \"{name}\" already exists",
+    "title_manage": "Manage Groups",
+    "hint_no_groups": "No groups exist yet. Please create one first.",
+    "label_existing": "Existing groups (click to select):",
+    "label_info_empty": "(empty)",
+    "label_info_mods": "Contains: {mods}",
+    "select_first": "Please select a group first",
+    "title_rename": "Rename Group",
+    "prompt_rename": "Rename \"{name}\" to:",
+    "title_delete_confirm": "Confirm Delete",
+    "msg_delete_confirm": "Delete group \"{name}\"?\n(Mods will not be deleted, only removed from group)",
+    "btn_rename": "✏️ Rename",
+    "btn_delete": "🗑️ Delete",
+    "btn_close": "Close"
+  },
+  "more_menu": {
+    "edit_note": "📝 Edit Note",
+    "edit_note_has": " (existing)",
+    "set_preview": "🖼️ Set Preview",
+    "set_preview_has": " (set)",
+    "group_add_remove": "📁 Add to / Remove from Group",
+    "no_groups": "  (No groups, create one first)",
+    "clear_preview": "🗑️ Clear Preview",
+    "clear_note": "🗑️ Clear Note"
+  },
+  "dialog": {
+    "title_hint": "Info",
+    "title_warning": "Warning",
+    "title_error": "Error",
+    "title_confirm": "Confirm",
+    "disabled_dir_created": "Disabled_Mods folder was not found in the game directory and has been created automatically.\n\nPath: {path}",
+    "toggle_confirm": "Are you sure you want to {action} mod \"{name}\"?\n\nThis will move the entire mod folder.",
+    "action_enable": "Enable",
+    "action_disable": "Disable",
+    "operation_in_progress": "Operation in progress",
+    "wait_for_current": "Please wait for the current operation to complete",
+    "select_mods_first": "Please select the mods to operate on first",
+    "already_target_state": "All selected mods are already in the target state",
+    "batch_confirm": "Are you sure you want to batch {action} {count} mod(s)?{skip}\n\nThis will move mod folders.",
+    "batch_skip": "({count} already in target state, will be skipped)",
+    "batch_result_title": "Batch Result",
+    "batch_result_fail": "Batch {action} completed: {success} succeeded, {fail} failed\n\n{detail}",
+    "operation_failed": "Operation Failed",
+    "cannot_toggle": "Cannot {action} mod \"{name}\":\n{error}"
+  },
+  "status": {
+    "stats": "Enabled: {enabled}  |  Disabled: {disabled}  |  Total: {total} Mods",
+    "toggled_enable": "Enabled: {name}",
+    "toggled_disable": "Disabled: {name}",
+    "toggle_failed": "{action} failed: {name}",
+    "batch_complete": "Batch {action} completed: {success} succeeded"
+  },
+  "progress": {
+    "toggling": "{action}ing: {name} ...",
+    "batch_toggling": "Batch {action}ing... ({current}/{total}){status}",
+    "preparing": "Preparing...",
+    "moving": "Moving... {copied}/{total} files",
+    "complete": "Done!",
+    "already_state": "{name} (already in target state)"
+  },
+  "preview": {
+    "title": "Image Preview - {name}"
+  },
+  "note_dialog": {
+    "title": "Edit Note",
+    "prompt": "Set display name for mod \"{name}\":"
+  },
+  "preview_dialog": {
+    "title": "Select Preview Image",
+    "filetypes": "Image files",
+    "missing_dep": "Preview image requires Pillow.\n\nRun: pip install Pillow"
+  },
+  "lang": {
+    "auto": "Auto"
+  },
+  "validate": {
+    "no_path": "No game path set",
+    "path_not_exist": "Game path does not exist",
+    "no_mods_dir": "Mods folder not found in game directory. Please verify the path is correct."
+  },
+  "toggle": {
+    "src_not_found": "Mod folder not found: {path}",
+    "dst_exists": "A mod with the same name already exists at target location: {path}"
+  }
+}

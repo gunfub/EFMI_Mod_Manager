@@ -15,7 +15,7 @@ import json
 def get_app_dir():
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 APP_DIR = get_app_dir()
@@ -115,6 +115,16 @@ class ConfigManager:
     def set_collapsed_groups(lst):
         config = ConfigManager.load()
         config["collapsed_groups"] = lst
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_language():
+        return ConfigManager.load().get("language", "auto")
+
+    @staticmethod
+    def set_language(lang):
+        config = ConfigManager.load()
+        config["language"] = lang
         ConfigManager.save(config)
 
     @staticmethod

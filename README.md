@@ -1,5 +1,7 @@
 # EFMI Mod Manager
 
+[English](README_EN.md) | **中文**
+
 基于 `customtkinter` 的 Windows PC Mod 管理器，通过移动文件夹的方式来启用/禁用 Mod。
 
 > **重要声明**：EFMI Mod Manager 不负责 Mod 的加载、解析或注入。Mod 的加载与运行时逻辑由 EFMI 在游戏启动阶段完成。本程序仅提供一个图形化的前端界面，用于快捷地启用或禁用 Mod —— 其底层实现仅是将 Mod 文件夹在 `Mods`（已启用）与 `Disabled_Mods`（已禁用）目录之间移动，以控制 EFMI 启动时应当加载哪些 Mod。本程序不修改任何 Mod 内容，也不参与 EFMI 的运行时行为。
@@ -13,6 +15,7 @@
 - **预览图片**：为每个 Mod 设置预览缩略图，点击可全屏查看原图
 - **README 检测**：自动识别 Mod 文件夹中的 `README.md` / `README.txt` 等文件，一键打开
 - **多语言 A-Z 快速跳转**：侧边栏字母索引支持英文、中文拼音首字母（可选依赖 `pypinyin`），混合排序快速定位
+- **多语言界面**：自动检测系统语言，支持中文 / English / 日本語 / 한국어 切换
 - **DPI 动态缩放**：自适应 Windows 高 DPI 显示器
 - **暗色主题**：基于 customtkinter 的现代化暗色 UI
 - **控制台隐藏**：PyInstaller 打包后默认隐藏终端窗口（在程序目录创建 `debug_mode` 文件可显示）
@@ -157,9 +160,10 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 
 程序配置保存在 `mod_manager_config.json`（与程序同目录），包含：
 
+- `language`：语言设置（`"auto"`, `"zh"`, `"en"`）
 - `game_path`：游戏目录路径
 - `mod_notes`：Mod 备注名称
-- `mod_images`：Mod 预览图路径
+- `mod_images`：Mod 预览图路径（Mod 文件夹内的图片存相对路径，外部图片存绝对路径）
 - `mod_groups`：分组数据
 - `group_order`：分组排序
 - `collapsed_groups`：已折叠的分组列表
@@ -174,12 +178,18 @@ modules/
 ├── __init__.py             ← 包声明
 ├── config.py               ← 配置管理（JSON 读写、分组、备注、预览图）
 ├── mod_ops.py              ← Mod 操作（扫描、移动、验证、README 检测）
+├── i18n.py                 ← 多语言（系统语言检测、JSON 翻译加载）
 ├── console_setup.py        ← 控制台/警告管理（stderr 重定向、pkg_resources 警告抑制）
 └── gui.py                  ← GUI 主界面（customtkinter 窗口、事件处理、批量操作）
+
+locales/
+├── en.json                 ← 英语翻译文件
+├── ja.json                 ← 日语翻译文件
+└── ko.json                 ← 韩语翻译文件
 ```
 
 **模块调用链：**  
-`mod_manager.py` → `console_setup.py`（启动阶段）  
+`mod_manager.py` → `console_setup.py` + `i18n.py`（启动阶段）  
 `mod_manager.py` → `gui.py` → `config.py` + `mod_ops.py`
 
 详细文档见 [modules/modules.md](modules/modules.md)。

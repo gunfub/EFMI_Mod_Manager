@@ -79,7 +79,17 @@ from modules.console_setup import setup_console_visibility
 setup_console_visibility(_APP_DIR)
 
 # ================================================================
-# 步骤 5: 导入 GUI 并启动
+# 步骤 5: 初始化多语言
+# ================================================================
+# 必须在导入 GUI 之前完成 i18n 初始化，这样 GUI 构建时就能使用正确的语言。
+# 优先读取配置文件中的语言设置，若不存在则使用自动检测。
+from modules.i18n import init_i18n
+from modules.config import ConfigManager
+_i18n = init_i18n()
+_i18n.set_language(ConfigManager.get_language())
+
+# ================================================================
+# 步骤 6: 导入 GUI 并启动
 # ================================================================
 # 到这里所有的启动前准备工作已完成，可以安全导入 customtkinter 了。
 # ModManagerApp 在 modules/gui.py 中定义，类构造时会初始化整个 GUI。

@@ -1,0 +1,120 @@
+{
+  "app": {
+    "title": "EFMI Mod Manager"
+  },
+  "top": {
+    "subtitle": "|  Mod 매니저",
+    "refresh": "🔄 새로고침",
+    "browse": "📁 폴더 선택",
+    "no_folder": "선택된 폴더 없음"
+  },
+  "toolbar": {
+    "select": "선택:",
+    "select_all": "전체 선택",
+    "invert": "반전",
+    "deselect": "선택 해제",
+    "actions": "작업:",
+    "batch_enable": "일괄 활성화",
+    "batch_disable": "일괄 비활성화",
+    "new_group": "➕ 새 그룹",
+    "manage_groups": "✏️ 그룹 관리"
+  },
+  "mod_list": {
+    "empty": "Mod 폴더를 찾을 수 없습니다",
+    "empty_state": "먼저 Mods 폴더가 포함된 게임 디렉토리를 선택하세요",
+    "ungrouped": "미분류",
+    "arrow_collapsed": "▶",
+    "arrow_expanded": "▼",
+    "count_suffix": " {count}개",
+    "status_enabled": "활성화",
+    "status_disabled": "비활성화"
+  },
+  "group_dialog": {
+    "title_create": "새 그룹",
+    "prompt_name": "그룹 이름 입력:",
+    "already_exists": "이미 존재함",
+    "already_exists_msg": "그룹 \"{name}\"이(가) 이미 존재합니다",
+    "title_manage": "그룹 관리",
+    "hint_no_groups": "그룹이 없습니다. 먼저 생성하세요.",
+    "label_existing": "기존 그룹 (클릭하여 선택):",
+    "label_info_empty": "(비어 있음)",
+    "label_info_mods": "포함된 Mod: {mods}",
+    "select_first": "먼저 그룹을 선택하세요",
+    "title_rename": "그룹 이름 변경",
+    "prompt_rename": "\"{name}\"의 새 이름 입력:",
+    "title_delete_confirm": "삭제 확인",
+    "msg_delete_confirm": "그룹 \"{name}\"을(를) 삭제하시겠습니까?\n(Mod는 삭제되지 않고 그룹에서만 제거됩니다)",
+    "btn_rename": "✏️ 이름 변경",
+    "btn_delete": "🗑️ 삭제",
+    "btn_close": "닫기"
+  },
+  "more_menu": {
+    "edit_note": "📝 메모 편집",
+    "edit_note_has": " (설정됨)",
+    "set_preview": "🖼️ 미리보기 설정",
+    "set_preview_has": " (설정됨)",
+    "group_add_remove": "📁 그룹에 추가 / 제거",
+    "no_groups": "  (그룹 없음, 먼저 생성하세요)",
+    "clear_preview": "🗑️ 미리보기 제거",
+    "clear_note": "🗑️ 메모 제거"
+  },
+  "dialog": {
+    "title_hint": "알림",
+    "title_warning": "경고",
+    "title_error": "오류",
+    "title_confirm": "확인",
+    "disabled_dir_created": "게임 디렉토리에 Disabled_Mods 폴더가 없어 자동으로 생성되었습니다.\n\n경로: {path}",
+    "toggle_confirm": "Mod \"{name}\"을(를) {action}하시겠습니까?\n\nMod 폴더 전체가 이동됩니다.",
+    "action_enable": "활성화",
+    "action_disable": "비활성화",
+    "operation_in_progress": "작업 진행 중",
+    "wait_for_current": "현재 작업이 완료될 때까지 기다려주세요",
+    "select_mods_first": "먼저 작업할 Mod를 선택하세요",
+    "already_target_state": "선택된 모든 Mod가 이미 대상 상태입니다",
+    "batch_confirm": "{count}개의 Mod를 일괄 {action}하시겠습니까?{skip}\n\nMod 폴더가 이동됩니다.",
+    "batch_skip": "({count}개는 이미 대상 상태이므로 건너뜁니다)",
+    "batch_result_title": "일괄 작업 결과",
+    "batch_result_fail": "일괄 {action} 완료: {success} 성공, {fail} 실패\n\n{detail}",
+    "operation_failed": "작업 실패",
+    "cannot_toggle": "Mod \"{name}\"을(를) {action}할 수 없습니다:\n{error}"
+  },
+  "status": {
+    "stats": "활성화: {enabled}  |  비활성화: {disabled}  |  합계: {total} Mod",
+    "toggled_enable": "활성화됨: {name}",
+    "toggled_disable": "비활성화됨: {name}",
+    "toggle_failed": "{action} 실패: {name}",
+    "batch_complete": "일괄 {action} 완료: {success} 성공"
+  },
+  "progress": {
+    "toggling": "{action} 중: {name} ...",
+    "batch_toggling": "일괄 {action} 중... ({current}/{total}){status}",
+    "preparing": "준비 중...",
+    "moving": "이동 중... {copied}/{total} 파일",
+    "complete": "완료!",
+    "already_state": "{name} (이미 대상 상태)"
+  },
+  "preview": {
+    "title": "이미지 미리보기 - {name}"
+  },
+  "note_dialog": {
+    "title": "메모 편집",
+    "prompt": "Mod \"{name}\"의 표시 이름 설정:"
+  },
+  "preview_dialog": {
+    "title": "미리보기 이미지 선택",
+    "filetypes": "이미지 파일",
+    "missing_dep": "미리보기 이미지 기능에 Pillow가 필요합니다.\n\n실행: pip install Pillow"
+  },
+  "lang": {
+    "auto": "자동"
+  },
+  "validate": {
+    "no_path": "게임 경로가 설정되지 않았습니다",
+    "path_not_exist": "게임 경로가 존재하지 않습니다",
+    "no_mods_dir": "게임 디렉토리에 Mods 폴더가 없습니다. 경로를 확인하세요."
+  },
+  "toggle": {
+    "src_not_found": "Mod 폴더를 찾을 수 없습니다: {path}",
+    "dst_exists": "같은 이름의 Mod가 이미 대상 위치에 존재합니다: {path}"
+  }
+}

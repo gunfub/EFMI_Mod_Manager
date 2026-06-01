@@ -1,0 +1,120 @@
+{
+  "app": {
+    "title": "EFMI Mod Manager"
+  },
+  "top": {
+    "subtitle": "|  Mod マネージャー",
+    "refresh": "🔄 更新",
+    "browse": "📁 フォルダ選択",
+    "no_folder": "フォルダが選択されていません"
+  },
+  "toolbar": {
+    "select": "選択:",
+    "select_all": "すべて選択",
+    "invert": "反転",
+    "deselect": "選択解除",
+    "actions": "操作:",
+    "batch_enable": "一括有効化",
+    "batch_disable": "一括無効化",
+    "new_group": "➕ 新規グループ",
+    "manage_groups": "✏️ グループ管理"
+  },
+  "mod_list": {
+    "empty": "Mod フォルダが見つかりません",
+    "empty_state": "最初に Mods フォルダを含むゲームディレクトリを選択してください",
+    "ungrouped": "未分類",
+    "arrow_collapsed": "▶",
+    "arrow_expanded": "▼",
+    "count_suffix": " {count} 個",
+    "status_enabled": "有効",
+    "status_disabled": "無効"
+  },
+  "group_dialog": {
+    "title_create": "新規グループ",
+    "prompt_name": "グループ名を入力:",
+    "already_exists": "既に存在します",
+    "already_exists_msg": "グループ \"{name}\" は既に存在します",
+    "title_manage": "グループ管理",
+    "hint_no_groups": "グループがありません。先に作成してください。",
+    "label_existing": "既存のグループ（クリックで選択）:",
+    "label_info_empty": "（空）",
+    "label_info_mods": "含まれる Mod: {mods}",
+    "select_first": "先にグループを選択してください",
+    "title_rename": "グループ名変更",
+    "prompt_rename": "\"{name}\" の新しい名前を入力:",
+    "title_delete_confirm": "削除確認",
+    "msg_delete_confirm": "グループ \"{name}\" を削除しますか？\n（Mod は削除されず、グループから外れるだけです）",
+    "btn_rename": "✏️ 名前変更",
+    "btn_delete": "🗑️ 削除",
+    "btn_close": "閉じる"
+  },
+  "more_menu": {
+    "edit_note": "📝 メモ編集",
+    "edit_note_has": "（設定済み）",
+    "set_preview": "🖼️ プレビュー設定",
+    "set_preview_has": "（設定済み）",
+    "group_add_remove": "📁 グループに追加 / 削除",
+    "no_groups": "  （グループなし、先に作成してください）",
+    "clear_preview": "🗑️ プレビュー解除",
+    "clear_note": "🗑️ メモ解除"
+  },
+  "dialog": {
+    "title_hint": "情報",
+    "title_warning": "警告",
+    "title_error": "エラー",
+    "title_confirm": "確認",
+    "disabled_dir_created": "ゲームディレクトリに Disabled_Mods フォルダが見つからなかったため、自動的に作成されました。\n\nパス: {path}",
+    "toggle_confirm": "Mod \"{name}\" を{action}しますか？\n\nMod フォルダ全体が移動されます。",
+    "action_enable": "有効化",
+    "action_disable": "無効化",
+    "operation_in_progress": "操作実行中",
+    "wait_for_current": "現在の操作が完了するまでお待ちください",
+    "select_mods_first": "最初に操作する Mod を選択してください",
+    "already_target_state": "選択された Mod はすべて既に目的の状態です",
+    "batch_confirm": "{count} 個の Mod を一括{action}しますか？{skip}\n\nMod フォルダが移動されます。",
+    "batch_skip": "（{count} 個は既に目的の状態のためスキップされます）",
+    "batch_result_title": "一括操作結果",
+    "batch_result_fail": "一括{action}完了: {success} 成功, {fail} 失敗\n\n{detail}",
+    "operation_failed": "操作失敗",
+    "cannot_toggle": "Mod \"{name}\" を{action}できません:\n{error}"
+  },
+  "status": {
+    "stats": "有効: {enabled}  |  無効: {disabled}  |  合計: {total} Mod",
+    "toggled_enable": "有効化: {name}",
+    "toggled_disable": "無効化: {name}",
+    "toggle_failed": "{action}失敗: {name}",
+    "batch_complete": "一括{action}完了: {success} 成功"
+  },
+  "progress": {
+    "toggling": "{action}中: {name} ...",
+    "batch_toggling": "一括{action}中... ({current}/{total}){status}",
+    "preparing": "準備中...",
+    "moving": "移動中... {copied}/{total} ファイル",
+    "complete": "完了！",
+    "already_state": "{name}（既に目的の状態です）"
+  },
+  "preview": {
+    "title": "画像プレビュー - {name}"
+  },
+  "note_dialog": {
+    "title": "メモ編集",
+    "prompt": "Mod \"{name}\" の表示名を設定:"
+  },
+  "preview_dialog": {
+    "title": "プレビュー画像を選択",
+    "filetypes": "画像ファイル",
+    "missing_dep": "プレビュー画像機能には Pillow が必要です。\n\n実行: pip install Pillow"
+  },
+  "lang": {
+    "auto": "自動"
+  },
+  "validate": {
+    "no_path": "ゲームパスが設定されていません",
+    "path_not_exist": "ゲームパスが存在しません",
+    "no_mods_dir": "ゲームディレクトリに Mods フォルダが見つかりません。パスを確認してください。"
+  },
+  "toggle": {
+    "src_not_found": "Mod フォルダが見つかりません: {path}",
+    "dst_exists": "同じ名前の Mod が既に移動先に存在します: {path}"
+  }
+}

@@ -30,10 +30,18 @@ except ImportError:
 
 from modules.config import ConfigManager, README_LABELS
 from modules.mod_ops import ModManager
+from modules.i18n import t, get_i18n
 
 
 class ModManagerApp:
     PREVIEW_SIZE = 48
+
+    LANG_NATIVE = {
+        "zh": "中文",
+        "en": "English",
+        "ja": "日本語",
+        "ko": "한국어",
+    }
 
     def __init__(self):
         ctk.set_appearance_mode("Dark")
@@ -43,6 +51,11 @@ class ModManagerApp:
         self.root.title("EFMI Mod Manager")
         self.root.geometry("1120x740")
         self.root.minsize(960, 520)
+
+        app_dir = os.path.dirname(sys.executable) if getattr(sys, "frozen", False) else os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(app_dir, "app.ico")
+        if os.path.isfile(icon_path):
+            self.root.iconbitmap(icon_path)
 
         # 禁用 Ctrl+G 切换主题
         self.root.bind("<Control-g>", lambda e: "break")
@@ -64,8 +77,15 @@ class ModManagerApp:
         self._primary_alpha_buttons = {}  # letter -> button
         self._ungrouped_btn = None  # 未分组专用索引按钮
         self._sorted_group_names = []  # 按名称排序后的分组名列表（未分组除外）
-        # 每个分组内部的迷你 A-Z 索引栏
+        # 分组内部的迷你 A-Z 索引栏
         self._group_mini_alpha_bars = {}  # group_name -> {"frame", "buttons", "index"}
+
+        # 语言切换下拉菜单
+        self._lang_var = None
+        self._lang_menu = None
+
+        # 工具栏可翻译控件引用
+        self._toolbar_widgets = {}
 
         # 动态 DPI 缩放
         self._dpi_scale = self._get_dpi_scale_factor()
@@ -130,41 +150,54 @@ class ModManagerApp:
         top_frame.pack(fill="x", padx=0, pady=0)
         top_frame.pack_propagate(False)
 
-        title_label = ctk.CTkLabel(
-            top_frame, text="EFMI Mod Manager",
+        self._title_label = ctk.CTkLabel(
+            top_frame, text=t("app.title", "EFMI Mod Manager"),
             font=self._font(20, weight="bold")
         )
-        title_label.pack(side="left", padx=(20, 10), pady=12)
+        self._title_label.pack(side="left", padx=(20, 10), pady=12)
 
-        subtitle_label = ctk.CTkLabel(
-            top_frame, text="|  Mod 管理器",
+        self._subtitle_label = ctk.CTkLabel(
+            top_frame, text=t("top.subtitle", "|  Mod 管理器"),
             font=self._font(12),
             text_color="gray"
         )
-        subtitle_label.pack(side="left", padx=(0, 20), pady=12)
+        self._subtitle_label.pack(side="left", padx=(0, 20), pady=12)
 
         self.path_label = ctk.CTkLabel(
-            top_frame, text="未选择文件夹",
+            top_frame, text=t("top.no_folder", "未选择文件夹"),
             font=self._font(11),
             text_color="gray"
         )
         self.path_label.pack(side="right", padx=(0, 10), pady=12)
 
-        refresh_btn = ctk.CTkButton(
-            top_frame, text="🔄 刷新", width=70, height=30,
+        self._refresh_btn = ctk.CTkButton(
+            top_frame, text=t("top.refresh", "🔄 刷新"), width=70, height=30,
             font=self._font(11),
             command=self._refresh
         )
-        refresh_btn.pack(side="right", padx=(0, 8), pady=12)
-        self._refresh_btn = refresh_btn
+        self._refresh_btn.pack(side="right", padx=(0, 8), pady=12)
 
-        browse_btn = ctk.CTkButton(
-            top_frame, text="📁 选择文件夹", width=110, height=30,
+        self._browse_btn = ctk.CTkButton(
+            top_frame, text=t("top.browse", "📁 选择文件夹"), width=110, height=30,
             font=self._font(11),
             command=self._browse_folder
         )
-        browse_btn.pack(side="right", padx=(0, 8), pady=12)
-        self._browse_btn = browse_btn
+        self._browse_btn.pack(side="right", padx=(0, 8), pady=12)
+
+        self._lang_var = ctk.StringVar(value=self._lang_menu_display())
+        self._lang_menu = ctk.CTkOptionMenu(
+            top_frame,
+            values=self._lang_menu_values(),
+            variable=self._lang_var,
+            command=self._on_language_change,
+            width=70, height=30,
+            font=self._font(10),
+            fg_color=("gray85", "gray25"),
+            text_color=("gray20", "gray85"),
+            button_color=("gray70", "gray30"),
+            button_hover_color=("gray60", "gray40"),
+        )
+        self._lang_menu.pack(side="right", padx=(0, 8), pady=12)
 
         # ---- 工具栏 ----
         toolbar = ctk.CTkFrame(self.root, height=42, corner_radius=0,
@@ -175,43 +208,72 @@ class ModManagerApp:
         toolbar_inner = ctk.CTkFrame(toolbar, fg_color=("gray90", "gray17"))
         toolbar_inner.pack(side="left", fill="y", padx=14, pady=4)
 
-        ctk.CTkLabel(toolbar_inner, text="选择:",
-                     font=self._font(11)).pack(side="left", padx=(0, 6))
+        w_select_label = ctk.CTkLabel(toolbar_inner, text=t("toolbar.select", "选择:"),
+                                      font=self._font(11))
+        w_select_label.pack(side="left", padx=(0, 6))
+        self._toolbar_widgets["select_label"] = w_select_label
 
-        ctk.CTkButton(toolbar_inner, text="全选", width=50, height=26,
-                      font=self._font(10),
-                      command=self._select_all).pack(side="left", padx=2)
-        ctk.CTkButton(toolbar_inner, text="反选", width=50, height=26,
-                      font=self._font(10),
-                      command=self._invert_selection).pack(side="left", padx=2)
-        ctk.CTkButton(toolbar_inner, text="不选", width=50, height=26,
-                      font=self._font(10),
-                      command=self._deselect_all).pack(side="left", padx=2)
+        w_select_all = ctk.CTkButton(toolbar_inner, text=t("toolbar.select_all", "全选"),
+                                     width=50, height=26,
+                                     font=self._font(10),
+                                     command=self._select_all)
+        w_select_all.pack(side="left", padx=2)
+        self._toolbar_widgets["select_all"] = w_select_all
+
+        w_invert = ctk.CTkButton(toolbar_inner, text=t("toolbar.invert", "反选"),
+                                 width=50, height=26,
+                                 font=self._font(10),
+                                 command=self._invert_selection)
+        w_invert.pack(side="left", padx=2)
+        self._toolbar_widgets["invert"] = w_invert
+
+        w_deselect = ctk.CTkButton(toolbar_inner, text=t("toolbar.deselect", "不选"),
+                                   width=50, height=26,
+                                   font=self._font(10),
+                                   command=self._deselect_all)
+        w_deselect.pack(side="left", padx=2)
+        self._toolbar_widgets["deselect"] = w_deselect
 
         sep1 = ctk.CTkFrame(toolbar_inner, width=1, height=22, fg_color="gray40")
         sep1.pack(side="left", padx=10)
 
-        ctk.CTkLabel(toolbar_inner, text="操作:",
-                     font=self._font(11)).pack(side="left", padx=(0, 6))
+        w_actions_label = ctk.CTkLabel(toolbar_inner, text=t("toolbar.actions", "操作:"),
+                                       font=self._font(11))
+        w_actions_label.pack(side="left", padx=(0, 6))
+        self._toolbar_widgets["actions_label"] = w_actions_label
 
-        ctk.CTkButton(toolbar_inner, text="批量启用", width=70, height=26,
-                      font=self._font(10), fg_color="#2ea043",
-                      hover_color="#3fb950",
-                      command=lambda: self._batch_toggle(True)).pack(side="left", padx=2)
-        ctk.CTkButton(toolbar_inner, text="批量禁用", width=70, height=26,
-                      font=self._font(10), fg_color="#da3633",
-                      hover_color="#f85149",
-                      command=lambda: self._batch_toggle(False)).pack(side="left", padx=2)
+        w_batch_enable = ctk.CTkButton(toolbar_inner, text=t("toolbar.batch_enable", "批量启用"),
+                                       width=70, height=26,
+                                       font=self._font(10), fg_color="#2ea043",
+                                       hover_color="#3fb950",
+                                       command=lambda: self._batch_toggle(True))
+        w_batch_enable.pack(side="left", padx=2)
+        self._toolbar_widgets["batch_enable"] = w_batch_enable
+
+        w_batch_disable = ctk.CTkButton(toolbar_inner, text=t("toolbar.batch_disable", "批量禁用"),
+                                        width=70, height=26,
+                                        font=self._font(10), fg_color="#da3633",
+                                        hover_color="#f85149",
+                                        command=lambda: self._batch_toggle(False))
+        w_batch_disable.pack(side="left", padx=2)
+        self._toolbar_widgets["batch_disable"] = w_batch_disable
 
         sep2 = ctk.CTkFrame(toolbar_inner, width=1, height=22, fg_color="gray40")
         sep2.pack(side="left", padx=10)
 
-        ctk.CTkButton(toolbar_inner, text="➕ 新建分组", width=80, height=26,
-                      font=self._font(10),
-                      command=self._create_group).pack(side="left", padx=2)
-        ctk.CTkButton(toolbar_inner, text="✏️ 管理分组", width=80, height=26,
-                      font=self._font(10),
-                      command=self._manage_groups).pack(side="left", padx=2)
+        w_new_group = ctk.CTkButton(toolbar_inner, text=t("toolbar.new_group", "➕ 新建分组"),
+                                    width=80, height=26,
+                                    font=self._font(10),
+                                    command=self._create_group)
+        w_new_group.pack(side="left", padx=2)
+        self._toolbar_widgets["new_group"] = w_new_group
+
+        w_manage_groups = ctk.CTkButton(toolbar_inner, text=t("toolbar.manage_groups", "✏️ 管理分组"),
+                                        width=80, height=26,
+                                        font=self._font(10),
+                                        command=self._manage_groups)
+        w_manage_groups.pack(side="left", padx=2)
+        self._toolbar_widgets["manage_groups"] = w_manage_groups
 
         # ---- 主体区域 ----
         body = ctk.CTkFrame(self.root, fg_color=("gray95", "gray14"))
@@ -268,6 +330,59 @@ class ModManagerApp:
 
         # 占位
         ctk.CTkLabel(self._primary_frame, text="", font=self._font(6)).pack()
+
+    # ============================================================
+    # 语言切换
+    # ============================================================
+    def _lang_menu_display(self):
+        i18n = get_i18n()
+        if i18n.lang == "auto":
+            return t("lang.auto", "自动")
+        return self.LANG_NATIVE.get(i18n.lang, i18n.lang)
+
+    def _lang_menu_values(self):
+        i18n = get_i18n()
+        values = [t("lang.auto", "自动")]
+        for code in self.LANG_NATIVE:
+            values.append(self.LANG_NATIVE[code])
+        return values
+
+    def _on_language_change(self, display_value):
+        if display_value == t("lang.auto", "自动"):
+            new_lang = "auto"
+        else:
+            inverse = {v: k for k, v in self.LANG_NATIVE.items()}
+            new_lang = inverse.get(display_value, display_value)
+
+        if new_lang == get_i18n().lang:
+            return
+
+        ConfigManager.set_language(new_lang)
+        get_i18n().set_language(new_lang)
+        self._apply_language()
+
+    def _apply_language(self):
+        self.root.title(t("app.title", "EFMI Mod Manager"))
+        self._title_label.configure(text=t("app.title", "EFMI Mod Manager"))
+        self._subtitle_label.configure(text=t("top.subtitle", "|  Mod 管理器"))
+        self._browse_btn.configure(text=t("top.browse", "📁 选择文件夹"))
+        self._refresh_btn.configure(text=t("top.refresh", "🔄 刷新"))
+
+        tw = self._toolbar_widgets
+        tw["select_label"].configure(text=t("toolbar.select", "选择:"))
+        tw["select_all"].configure(text=t("toolbar.select_all", "全选"))
+        tw["invert"].configure(text=t("toolbar.invert", "反选"))
+        tw["deselect"].configure(text=t("toolbar.deselect", "不选"))
+        tw["actions_label"].configure(text=t("toolbar.actions", "操作:"))
+        tw["batch_enable"].configure(text=t("toolbar.batch_enable", "批量启用"))
+        tw["batch_disable"].configure(text=t("toolbar.batch_disable", "批量禁用"))
+        tw["new_group"].configure(text=t("toolbar.new_group", "➕ 新建分组"))
+        tw["manage_groups"].configure(text=t("toolbar.manage_groups", "✏️ 管理分组"))
+
+        self._lang_var.set(self._lang_menu_display())
+        self._lang_menu.configure(values=self._lang_menu_values())
+
+        self._refresh()
 
     # ---- 中文拼音索引支持 ----
     @staticmethod
@@ -477,7 +592,7 @@ class ModManagerApp:
 
     def _scroll_to_ungrouped(self):
         """滚动到未分组标题"""
-        header = self._group_headers.get("未分组")
+        header = self._group_headers.get(t("mod_list.ungrouped", "未分组"))
         if header and header.winfo_exists():
             self._scroll_to_widget(header)
 
@@ -498,7 +613,7 @@ class ModManagerApp:
     # 选择文件夹 / 刷新
     # ============================================================
     def _browse_folder(self):
-        path = filedialog.askdirectory(title="选择游戏 Mod 文件夹（包含 Mods 和 Disabled_Mods 的目录）")
+        path = filedialog.askdirectory(title=t("top.browse", "选择游戏 Mod 文件夹（包含 Mods 和 Disabled_Mods 的目录）"))
         if path:
             ConfigManager.set_game_path(path)
             self._load_config_and_refresh()
@@ -507,12 +622,14 @@ class ModManagerApp:
         game_path = ConfigManager.get_game_path()
         if game_path:
             self.path_label.configure(text=os.path.basename(game_path) or game_path)
+        else:
+            self.path_label.configure(text=t("top.no_folder", "未选择文件夹"))
         self._refresh()
 
     def _refresh(self):
         game_path = ConfigManager.get_game_path()
         if not game_path:
-            self._show_empty_state("请先选择一个包含 Mods 文件夹的游戏目录")
+            self._show_empty_state(t("mod_list.empty_state", "请先选择一个包含 Mods 文件夹的游戏目录"))
             return
 
         self.mod_manager = ModManager(game_path)
@@ -531,9 +648,9 @@ class ModManagerApp:
 
         if created_disabled:
             self.root.after(100, lambda: messagebox.showinfo(
-                "提示",
-                "检测到游戏目录中没有 Disabled_Mods 文件夹，已自动创建。\n\n"
-                "路径: " + self.mod_manager.disabled_dir
+                t("dialog.title_hint", "提示"),
+                t("dialog.disabled_dir_created", "检测到游戏目录中没有 Disabled_Mods 文件夹，已自动创建。\n\n"
+                  "路径: {path}").format(path=self.mod_manager.disabled_dir)
             ))
 
     def _show_empty_state(self, message):
@@ -578,7 +695,7 @@ class ModManagerApp:
 
         if not self.mods_data:
             ctk.CTkLabel(
-                self.scroll_frame, text="没有找到任何 Mod 文件夹",
+                self.scroll_frame, text=t("mod_list.empty", "没有找到任何 Mod 文件夹"),
                 font=self._font(13), text_color="gray"
             ).pack(pady=60)
             return
@@ -622,8 +739,8 @@ class ModManagerApp:
                     (notes.get(m["name"], "") or m["name"]).strip()
                 )
             )
-            self._create_group_section("未分组", unassigned, notes, images,
-                                       is_collapsed=("未分组" in collapsed))
+            self._create_group_section(t("mod_list.ungrouped", "未分组"), unassigned, notes, images,
+                                       is_collapsed=(t("mod_list.ungrouped", "未分组") in collapsed))
 
     def _create_group_section(self, gname, mods, notes, images, is_collapsed=False):
         # ---- 分组标题栏 ----
@@ -634,7 +751,7 @@ class ModManagerApp:
         header.pack(fill="x", padx=2, pady=(10, 2))
         header.pack_propagate(False)
 
-        arrow = "▶" if is_collapsed else "▼"
+        arrow = t("mod_list.arrow_collapsed", "▶") if is_collapsed else t("mod_list.arrow_expanded", "▼")
         collapse_btn = ctk.CTkButton(
             header, text=arrow, width=26, height=26,
             font=self._font(10),
@@ -663,7 +780,8 @@ class ModManagerApp:
         name_label.pack(side="left")
 
         count_label = ctk.CTkLabel(
-            header, text=f"({len(mods)} 个)",
+            header,
+            text=t("mod_list.count_suffix", "({count} 个)").format(count=len(mods)),
             font=self._font(10),
             text_color="gray"
         )
@@ -706,7 +824,7 @@ class ModManagerApp:
         collapsed_list = ConfigManager.get_collapsed_groups()
         if content.winfo_manager():
             content.pack_forget()
-            btn.configure(text="▶")
+            btn.configure(text=t("mod_list.arrow_collapsed", "▶"))
             if gname not in collapsed_list:
                 collapsed_list.append(gname)
         else:
@@ -715,11 +833,44 @@ class ModManagerApp:
                 content.pack(after=header, fill="x", padx=2, pady=0)
             else:
                 content.pack(fill="x", padx=2, pady=0)
-            btn.configure(text="▼")
+            btn.configure(text=t("mod_list.arrow_expanded", "▼"))
             if gname in collapsed_list:
                 collapsed_list.remove(gname)
 
         ConfigManager.set_collapsed_groups(collapsed_list)
+
+    # ============================================================
+    # 预览图路径解析
+    # ============================================================
+    @staticmethod
+    def _resolve_preview_path(mod_path, stored_path):
+        """
+        解析预览图路径，兼容 Mod 文件夹移动（开关）导致的路径变化。
+
+        - 相对路径：拼接到 mod_path 后面
+        - 绝对路径：直接使用；若路径中包含 Mods/ 或 Disabled_Mods/ 但文件不存在，
+          尝试交换文件夹名称（应对 Mod 开关移动）
+        """
+        if not stored_path:
+            return ""
+
+        if not os.path.isabs(stored_path):
+            full = os.path.join(mod_path, stored_path)
+            return full if os.path.isfile(full) else ""
+
+        if os.path.isfile(stored_path):
+            return stored_path
+
+        norm = os.path.normpath(stored_path)
+        if "\\Mods\\" in norm:
+            alt = norm.replace("\\Mods\\", "\\Disabled_Mods\\")
+            if os.path.isfile(alt):
+                return alt
+        elif "\\Disabled_Mods\\" in norm:
+            alt = norm.replace("\\Disabled_Mods\\", "\\Mods\\")
+            if os.path.isfile(alt):
+                return alt
+        return ""
 
     def _create_mod_row(self, parent, mod, note, image_path):
         name = mod["name"]
@@ -744,22 +895,23 @@ class ModManagerApp:
         cb.pack(side="left", padx=(8, 4))
 
         # ---- 预览图 ----
-        if image_path and HAS_PIL and os.path.isfile(image_path):
+        resolved_img = self._resolve_preview_path(mod["path"], image_path)
+        if resolved_img and HAS_PIL:
             try:
-                img = Image.open(image_path)
+                img = Image.open(resolved_img)
                 img.thumbnail((self.PREVIEW_SIZE, self.PREVIEW_SIZE), Image.LANCZOS)
                 ctk_img = CTkImage(light_image=img, dark_image=img,
                                    size=(self.PREVIEW_SIZE, self.PREVIEW_SIZE))
                 self._preview_ctk_images[name] = ctk_img
                 preview_label = ctk.CTkLabel(row, image=ctk_img, text="",
-                                             cursor="hand2")
+                                              cursor="hand2")
                 preview_label.pack(side="left", padx=(0, 6))
                 preview_label.bind("<Button-1>",
-                                   lambda e, p=image_path: self._show_full_image(p))
+                                   lambda e, p=resolved_img: self._show_full_image(p))
                 for child in preview_label.winfo_children():
                     child.bind("<Button-1>",
-                               lambda e, p=image_path: self._show_full_image(p))
-                preview_label._image_path = image_path
+                               lambda e, p=resolved_img: self._show_full_image(p))
+                preview_label._image_path = resolved_img
             except Exception:
                 pass
 
@@ -820,7 +972,7 @@ class ModManagerApp:
 
         status_label = ctk.CTkLabel(
             right_frame,
-            text="启用" if enabled else "禁用",
+            text=t("mod_list.status_enabled", "启用") if enabled else t("mod_list.status_disabled", "禁用"),
             font=self._font(9),
             text_color="#3fb950" if enabled else "gray"
         )
@@ -936,13 +1088,18 @@ class ModManagerApp:
     # 分组管理
     # ============================================================
     def _create_group(self):
-        result = simpledialog.askstring("新建分组", "输入分组名称：", parent=self.root)
+        result = simpledialog.askstring(
+            t("group_dialog.title_create", "新建分组"),
+            t("group_dialog.prompt_name", "输入分组名称："),
+            parent=self.root)
         if result and result.strip():
             gname = result.strip()
             groups = ConfigManager.get_mod_groups()
             order = ConfigManager.get_group_order()
             if gname in groups:
-                messagebox.showwarning("已存在", f"分组 \"{gname}\" 已存在")
+                messagebox.showwarning(
+                    t("group_dialog.already_exists", "已存在"),
+                    t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=gname))
                 return
             groups[gname] = []
             order.append(gname)
@@ -958,17 +1115,19 @@ class ModManagerApp:
         all_groups = ordered_groups + other_groups
 
         if not all_groups:
-            messagebox.showinfo("提示", "当前没有任何分组，请先新建分组。")
+            messagebox.showinfo(
+                t("dialog.title_hint", "提示"),
+                t("group_dialog.hint_no_groups", "当前没有任何分组，请先新建分组。"))
             return
 
         dialog = ctk.CTkToplevel(self.root)
-        dialog.title("管理分组")
+        dialog.title(t("group_dialog.title_manage", "管理分组"))
         dialog.geometry("520x480")
         dialog.transient(self.root)
         dialog.grab_set()
 
         ctk.CTkLabel(
-            dialog, text="现有分组（点击选择）:",
+            dialog, text=t("group_dialog.label_existing", "现有分组（点击选择）:"),
             font=self._font(13, weight="bold")
         ).pack(padx=20, pady=(16, 4), anchor="w")
 
@@ -989,7 +1148,10 @@ class ModManagerApp:
         def select_group(gname):
             selected_group[0] = gname
             mods = groups.get(gname, [])
-            info_label.configure(text=f"包含 Mod: {', '.join(mods) if mods else '(空)'}")
+            empty_text = t("group_dialog.label_info_empty", "(空)")
+            info_text = t("group_dialog.label_info_mods", "包含: {mods}").format(
+                mods=", ".join(mods) if mods else empty_text)
+            info_label.configure(text=info_text)
             for g, btn in group_buttons.items():
                 if g == gname:
                     btn.configure(fg_color=("#3B8ED0", "#1F6AA5"))
@@ -1016,14 +1178,20 @@ class ModManagerApp:
         def rename_group():
             gname = selected_group[0]
             if not gname:
-                messagebox.showwarning("提示", "请先选择一个分组")
+                messagebox.showwarning(
+                    t("dialog.title_warning", "提示"),
+                    t("group_dialog.select_first", "请先选择一个分组"))
                 return
-            new_name = simpledialog.askstring("重命名分组", f"将 \"{gname}\" 重命名为：",
-                                              parent=dialog)
+            new_name = simpledialog.askstring(
+                t("group_dialog.title_rename", "重命名分组"),
+                t("group_dialog.prompt_rename", "将 \"{name}\" 重命名为：").format(name=gname),
+                parent=dialog)
             if new_name and new_name.strip() and new_name.strip() != gname:
                 nn = new_name.strip()
                 if nn in groups:
-                    messagebox.showwarning("已存在", f"分组 \"{nn}\" 已存在")
+                    messagebox.showwarning(
+                        t("group_dialog.already_exists", "已存在"),
+                        t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=nn))
                     return
                 groups[nn] = groups.pop(gname)
                 if gname in order:
@@ -1037,7 +1205,9 @@ class ModManagerApp:
             gname = selected_group[0]
             if not gname:
                 return
-            if messagebox.askyesno("确认删除", f"确定要删除分组 \"{gname}\" 吗？\n（Mod 不会被删除，只是移除分组）"):
+            if messagebox.askyesno(
+                t("group_dialog.title_delete_confirm", "确认删除"),
+                t("group_dialog.msg_delete_confirm", "确定要删除分组 \"{name}\" 吗？\n（Mod 不会被删除，只是移除分组）").format(name=gname)):
                 groups.pop(gname, None)
                 if gname in order:
                     order.remove(gname)
@@ -1046,12 +1216,12 @@ class ModManagerApp:
                 dialog.destroy()
                 self._refresh()
 
-        ctk.CTkButton(btn_row, text="✏️ 重命名", width=80,
+        ctk.CTkButton(btn_row, text=t("group_dialog.btn_rename", "✏️ 重命名"), width=80,
                       command=rename_group).pack(side="left", padx=(0, 8))
-        ctk.CTkButton(btn_row, text="🗑️ 删除分组", width=80,
+        ctk.CTkButton(btn_row, text=t("group_dialog.btn_delete", "🗑️ 删除分组"), width=80,
                       fg_color="#da3633", hover_color="#f85149",
                       command=delete_group).pack(side="left")
-        ctk.CTkButton(btn_row, text="关闭", width=60,
+        ctk.CTkButton(btn_row, text=t("group_dialog.btn_close", "关闭"), width=60,
                       command=dialog.destroy).pack(side="right")
 
     # ============================================================
@@ -1066,14 +1236,16 @@ class ModManagerApp:
                        font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))), bd=1, relief="flat")
 
         current_note = ConfigManager.get_mod_notes().get(name, "")
+        note_has_label = t("more_menu.edit_note_has", " (已有)") if current_note else ""
         menu.add_command(
-            label=f"📝 编辑备注" + (" (已有)" if current_note else ""),
+            label=t("more_menu.edit_note", "📝 编辑备注") + note_has_label,
             command=lambda: self._edit_note(mod),
         )
 
         current_img = ConfigManager.get_mod_images().get(name, "")
+        img_has_label = t("more_menu.set_preview_has", " (已设置)") if current_img else ""
         menu.add_command(
-            label="🖼️ 设置预览图" + (" (已设置)" if current_img else ""),
+            label=t("more_menu.set_preview", "🖼️ 设置预览图") + img_has_label,
             command=lambda: self._set_preview_image(mod),
         )
 
@@ -1096,14 +1268,14 @@ class ModManagerApp:
                 self._toggle_mod_group(mod, g, not has),
             )
         if not all_groups:
-            group_menu.add_command(label="  (无分组，请先创建)", state="disabled")
+            group_menu.add_command(label=t("more_menu.no_groups", "  (无分组，请先创建)"), state="disabled")
 
-        menu.add_cascade(label="📁 添加到分组 / 移出分组", menu=group_menu)
+        menu.add_cascade(label=t("more_menu.group_add_remove", "📁 添加到分组 / 移出分组"), menu=group_menu)
 
         if current_img:
-            menu.add_command(label="🗑️ 清除预览图", command=lambda: self._clear_preview_image(mod))
+            menu.add_command(label=t("more_menu.clear_preview", "🗑️ 清除预览图"), command=lambda: self._clear_preview_image(mod))
         if current_note:
-            menu.add_command(label="🗑️ 清除备注", command=lambda: self._clear_note(mod))
+            menu.add_command(label=t("more_menu.clear_note", "🗑️ 清除备注"), command=lambda: self._clear_note(mod))
 
         row_info = self._mod_rows.get(name)
         if row_info:
@@ -1147,7 +1319,8 @@ class ModManagerApp:
         name = mod["name"]
         current = ConfigManager.get_mod_notes().get(name, "")
         result = simpledialog.askstring(
-            "编辑备注", f"为 Mod \"{name}\" 设置备注名称：",
+            t("note_dialog.title", "编辑备注"),
+            t("note_dialog.prompt", "为 Mod \"{name}\" 设置备注名称：").format(name=name),
             initialvalue=current, parent=self.root,
         )
         if result is not None:
@@ -1160,14 +1333,22 @@ class ModManagerApp:
 
     def _set_preview_image(self, mod):
         if not HAS_PIL:
-            messagebox.showwarning("缺少依赖", "预览图功能需要 Pillow 库。\n\n请运行: pip install Pillow")
+            messagebox.showwarning(
+                t("dialog.title_warning", "缺少依赖"),
+                t("preview_dialog.missing_dep", "预览图功能需要 Pillow 库。\n\n请运行: pip install Pillow"))
             return
         path = filedialog.askopenfilename(
-            title="选择预览图片",
-            filetypes=[("图片文件", "*.png *.jpg *.jpeg *.gif *.bmp"), ("所有文件", "*.*")],
+            title=t("preview_dialog.title", "选择预览图片"),
+            filetypes=[(t("preview_dialog.filetypes", "图片文件"), "*.png *.jpg *.jpeg *.gif *.bmp"), ("All Files", "*.*")],
         )
         if path:
-            ConfigManager.set_mod_image(mod["name"], path)
+            mod_dir = os.path.normpath(mod["path"])
+            norm_path = os.path.normpath(path)
+            if norm_path.startswith(mod_dir + os.sep):
+                stored = os.path.relpath(norm_path, mod_dir)
+            else:
+                stored = norm_path
+            ConfigManager.set_mod_image(mod["name"], stored)
             self._refresh()
 
     def _clear_preview_image(self, mod):
@@ -1203,7 +1384,7 @@ class ModManagerApp:
                 display_img = pil_img
 
             win = tk.Toplevel(self.root)
-            win.title(f"图片预览 - {os.path.basename(image_path)}")
+            win.title(t("preview.title", "图片预览 - {name}").format(name=os.path.basename(image_path)))
             win.geometry(f"{new_w}x{new_h}")
             win.resizable(False, False)
             win.configure(bg="black")
@@ -1244,7 +1425,9 @@ class ModManagerApp:
 
     def _toggle_mod_threaded(self, mod):
         if self.is_operating:
-            messagebox.showwarning("操作中", "请等待当前操作完成")
+            messagebox.showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
             row_info = self._mod_rows.get(mod["name"])
             if row_info:
                 row_info["switch_var"].set(mod["enabled"])
@@ -1252,9 +1435,13 @@ class ModManagerApp:
 
         name = mod["name"]
         currently_enabled = mod["enabled"]
-        action = "禁用" if currently_enabled else "启用"
+        action_key = "disable" if currently_enabled else "enable"
+        action_display = t("dialog.action_disable", "禁用") if currently_enabled else t("dialog.action_enable", "启用")
 
-        if not messagebox.askyesno("确认操作", f"确定要{action} Mod \"{name}\" 吗？\n\n这将会移动整个 Mod 文件夹。"):
+        if not messagebox.askyesno(
+            t("dialog.title_confirm", "确认操作"),
+            t("dialog.toggle_confirm", "确定要{action} Mod \"{name}\" 吗？\n\n这将会移动整个 Mod 文件夹。").format(
+                action=action_display, name=name)):
             row_info = self._mod_rows.get(name)
             if row_info:
                 row_info["switch_var"].set(currently_enabled)
@@ -1267,7 +1454,8 @@ class ModManagerApp:
         self.progress_bar.pack(side="left", padx=(10, 8))
         self.progress_text.pack(side="left")
         self.progress_bar.set(0)
-        self.progress_text.configure(text=f"正在{action}: {name} ...")
+        self.progress_text.configure(
+            text=t("progress.toggling", "正在{action}: {name} ...").format(action=action_display, name=name))
 
         def file_cb(current, total, bytes_done, status):
             pct = current / total if total > 0 else 1.0
@@ -1276,9 +1464,9 @@ class ModManagerApp:
         def worker():
             try:
                 self.mod_manager.toggle_mod(name, currently_enabled, file_cb)
-                self.root.after(0, self._on_toggle_complete, name, action, True, "")
+                self.root.after(0, self._on_toggle_complete, name, action_key, True, "")
             except Exception as e:
-                self.root.after(0, self._on_toggle_complete, name, action, False, str(e))
+                self.root.after(0, self._on_toggle_complete, name, action_key, False, str(e))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1287,28 +1475,37 @@ class ModManagerApp:
     # ============================================================
     def _batch_toggle(self, enable):
         if self.is_operating:
-            messagebox.showwarning("操作中", "请等待当前操作完成")
+            messagebox.showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
             return
 
         selected = self._get_selected_mods()
         if not selected:
-            messagebox.showinfo("提示", "请先勾选要操作的 Mod")
+            messagebox.showinfo(
+                t("dialog.title_hint", "提示"),
+                t("dialog.select_mods_first", "请先勾选要操作的 Mod"))
             return
 
-        action = "启用" if enable else "禁用"
+        action_key = "enable" if enable else "disable"
+        action_display = t("dialog.action_enable", "启用") if enable else t("dialog.action_disable", "禁用")
         to_toggle = [m for m in selected if m["enabled"] != enable]
         already = len(selected) - len(to_toggle)
 
-        msg = f"确定要批量{action} {len(to_toggle)} 个 Mod 吗？"
+        skip_msg = ""
         if already > 0:
-            msg += f"\n（{already} 个已处于目标状态，将跳过）"
-        msg += "\n\n这将会移动 Mod 文件夹。"
+            skip_msg = "\n" + t("dialog.batch_skip", "（{count} 个已处于目标状态，将跳过）").format(count=already)
 
-        if not messagebox.askyesno("确认批量操作", msg):
+        if not messagebox.askyesno(
+            t("dialog.title_confirm", "确认批量操作"),
+            t("dialog.batch_confirm", "确定要批量{action} {count} 个 Mod 吗？{skip}\n\n这将会移动 Mod 文件夹。").format(
+                action=action_display, count=len(to_toggle), skip=skip_msg)):
             return
 
         if not to_toggle:
-            messagebox.showinfo("提示", "所选 Mod 均已处于目标状态")
+            messagebox.showinfo(
+                t("dialog.title_hint", "提示"),
+                t("dialog.already_target_state", "所选 Mod 均已处于目标状态"))
             return
 
         self.is_operating = True
@@ -1318,7 +1515,9 @@ class ModManagerApp:
         self.progress_bar.pack(side="left", padx=(10, 8))
         self.progress_text.pack(side="left")
         self.progress_bar.set(0)
-        self.progress_text.configure(text=f"正在批量{action}... (0/{len(to_toggle)})")
+        self.progress_text.configure(
+            text=t("progress.batch_toggling", "正在批量{action}... ({current}/{total})").format(
+                action=action_display, current=0, total=len(to_toggle)))
 
         def file_cb(current, total, bytes_done, status):
             pass
@@ -1326,7 +1525,8 @@ class ModManagerApp:
         def mod_cb(idx, total, status):
             pct = idx / total
             self.root.after(0, self._update_progress, pct,
-                            f"正在批量{action}... ({idx}/{total}) {status}")
+                            t("progress.batch_toggling", "正在批量{action}... ({current}/{total}) {status}").format(
+                                action=action_display, current=idx, total=total, status=status))
 
         def worker():
             results = self.mod_manager.toggle_mods_batch(
@@ -1334,11 +1534,11 @@ class ModManagerApp:
                 progress_callback=mod_cb,
                 file_progress_callback=file_cb,
             )
-            self.root.after(0, self._on_batch_complete, results, action)
+            self.root.after(0, self._on_batch_complete, results, action_key, action_display)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _on_batch_complete(self, results, action):
+    def _on_batch_complete(self, results, action_key, action_display):
         self.progress_frame.pack_forget()
         self.progress_bar.pack_forget()
         self.progress_text.pack_forget()
@@ -1351,10 +1551,14 @@ class ModManagerApp:
         if fail > 0:
             failed_list = [f"  - {name}: {err}" for name, ok, err in results if not ok]
             detail = "\n".join(failed_list[:8])
-            messagebox.showwarning("批量操作结果",
-                                   f"批量{action}完成：成功 {success} 个，失败 {fail} 个\n\n{detail}")
+            messagebox.showwarning(
+                t("dialog.batch_result_title", "批量操作结果"),
+                t("dialog.batch_result_fail", "批量{action}完成：成功 {success} 个，失败 {fail} 个\n\n{detail}").format(
+                    action=action_display, success=success, fail=fail, detail=detail))
         else:
-            self.status_label.configure(text=f"批量{action}完成: 成功 {success} 个")
+            self.status_label.configure(
+                text=t("status.batch_complete", "批量{action}完成: 成功 {success} 个").format(
+                    action=action_display, success=success))
 
         self._refresh()
 
@@ -1362,7 +1566,7 @@ class ModManagerApp:
         self.progress_bar.set(pct)
         self.progress_text.configure(text=status)
 
-    def _on_toggle_complete(self, name, action, success, error_msg):
+    def _on_toggle_complete(self, name, action_key, success, error_msg):
         self.progress_frame.pack_forget()
         self.progress_bar.pack_forget()
         self.progress_text.pack_forget()
@@ -1370,11 +1574,21 @@ class ModManagerApp:
         self.is_operating = False
 
         if success:
-            self.status_label.configure(text=f"已{action}: {name}")
+            if action_key == "enable":
+                msg = t("status.toggled_enable", "已启用: {name}").format(name=name)
+            else:
+                msg = t("status.toggled_disable", "已禁用: {name}").format(name=name)
+            self.status_label.configure(text=msg)
             self._refresh()
         else:
-            messagebox.showerror("操作失败", f"无法{action} Mod \"{name}\":\n{error_msg}")
-            self.status_label.configure(text=f"{action}失败: {name}")
+            action_display = t("dialog.action_enable", "启用") if action_key == "enable" else t("dialog.action_disable", "禁用")
+            messagebox.showerror(
+                t("dialog.operation_failed", "操作失败"),
+                t("dialog.cannot_toggle", "无法{action} Mod \"{name}\":\n{error}").format(
+                    action=action_display, name=name, error=error_msg))
+            self.status_label.configure(
+                text=t("status.toggle_failed", "{action}失败: {name}").format(
+                    action=action_display, name=name))
 
     def _set_ui_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
@@ -1391,7 +1605,8 @@ class ModManagerApp:
         enabled_count = sum(1 for m in self.mods_data if m["enabled"])
         disabled_count = len(self.mods_data) - enabled_count
         self.status_label.configure(
-            text=f"已启用: {enabled_count} 个  |  已禁用: {disabled_count} 个  |  共计: {len(self.mods_data)} 个 Mod"
+            text=t("status.stats", "已启用: {enabled} 个  |  已禁用: {disabled} 个  |  共计: {total} 个 Mod").format(
+                enabled=enabled_count, disabled=disabled_count, total=len(self.mods_data))
         )
 
     def run(self):
