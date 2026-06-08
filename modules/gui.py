@@ -1483,22 +1483,19 @@ class ModManagerApp:
             win.title(t("preview.title", "图片预览 - {name}").format(name=os.path.basename(image_path)))
             win.geometry(f"{new_w}x{new_h}")
             win.resizable(False, False)
+            win.attributes("-topmost", True)
+            win.lift()
 
             x = (screen_w - new_w) // 2
             y = (screen_h - new_h) // 2
             win.geometry(f"+{x}+{y}")
 
             ctk_img = CTkImage(light_image=display_img, dark_image=display_img, size=(new_w, new_h))
-            img_label = ctk.CTkLabel(win, image=ctk_img, text="", cursor="hand2")
+            img_label = ctk.CTkLabel(win, image=ctk_img, text="")
             img_label.image = ctk_img
             img_label.pack(fill="both", expand=True)
 
-            def close_win(e=None):
-                win.destroy()
-
-            img_label.bind("<Button-1>", close_win)
-            win.bind("<Escape>", close_win)
-            win.bind("<MouseWheel>", close_win)
+            win.bind("<Escape>", lambda e: win.destroy())
 
             win.focus_force()
 
