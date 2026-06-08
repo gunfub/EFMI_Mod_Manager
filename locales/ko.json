@@ -46,6 +46,7 @@
     "msg_delete_confirm": "그룹 \"{name}\"을(를) 삭제하시겠습니까?\n(Mod는 삭제되지 않고 그룹에서만 제거됩니다)",
     "btn_rename": "✏️ 이름 변경",
     "btn_delete": "🗑️ 삭제",
+    "btn_create": "➕ 새로 만들기",
     "btn_close": "닫기"
   },
   "more_menu": {
@@ -76,7 +77,9 @@
     "batch_result_title": "일괄 작업 결과",
     "batch_result_fail": "일괄 {action} 완료: {success} 성공, {fail} 실패\n\n{detail}",
     "operation_failed": "작업 실패",
-    "cannot_toggle": "Mod \"{name}\"을(를) {action}할 수 없습니다:\n{error}"
+    "cannot_toggle": "Mod \"{name}\"을(를) {action}할 수 없습니다:\n{error}",
+    "ok": "확인",
+    "cancel": "취소"
   },
   "status": {
     "stats": "활성화: {enabled}  |  비활성화: {disabled}  |  합계: {total} Mod",

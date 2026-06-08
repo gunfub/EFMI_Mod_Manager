@@ -46,6 +46,7 @@
     "msg_delete_confirm": "グループ \"{name}\" を削除しますか？\n（Mod は削除されず、グループから外れるだけです）",
     "btn_rename": "✏️ 名前変更",
     "btn_delete": "🗑️ 削除",
+    "btn_create": "➕ 新規",
     "btn_close": "閉じる"
   },
   "more_menu": {
@@ -76,7 +77,9 @@
     "batch_result_title": "一括操作結果",
     "batch_result_fail": "一括{action}完了: {success} 成功, {fail} 失敗\n\n{detail}",
     "operation_failed": "操作失敗",
-    "cannot_toggle": "Mod \"{name}\" を{action}できません:\n{error}"
+    "cannot_toggle": "Mod \"{name}\" を{action}できません:\n{error}",
+    "ok": "OK",
+    "cancel": "キャンセル"
   },
   "status": {
     "stats": "有効: {enabled}  |  無効: {disabled}  |  合計: {total} Mod",

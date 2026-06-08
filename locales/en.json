@@ -46,6 +46,7 @@
     "msg_delete_confirm": "Delete group \"{name}\"?\n(Mods will not be deleted, only removed from group)",
     "btn_rename": "✏️ Rename",
     "btn_delete": "🗑️ Delete",
+    "btn_create": "➕ New",
     "btn_close": "Close"
   },
   "more_menu": {
@@ -76,7 +77,9 @@
     "batch_result_title": "Batch Result",
     "batch_result_fail": "Batch {action} completed: {success} succeeded, {fail} failed\n\n{detail}",
     "operation_failed": "Operation Failed",
-    "cannot_toggle": "Cannot {action} mod \"{name}\":\n{error}"
+    "cannot_toggle": "Cannot {action} mod \"{name}\":\n{error}",
+    "ok": "OK",
+    "cancel": "Cancel"
   },
   "status": {
     "stats": "Enabled: {enabled}  |  Disabled: {disabled}  |  Total: {total} Mods",

@@ -85,6 +85,10 @@ def setup_console_visibility(app_dir):
         restore_stderr()
         return
 
+    if sys.platform != "win32":
+        restore_stderr()
+        return
+
     import ctypes
 
     debug_file = os.path.join(app_dir, "debug_mode")

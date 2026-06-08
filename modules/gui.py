@@ -7,7 +7,7 @@ EFMI Mod Manager - GUI 主界面模块
 import os
 import sys
 import threading
-from tkinter import messagebox, filedialog, simpledialog
+from tkinter import messagebox, filedialog
 
 import customtkinter as ctk
 from customtkinter import CTkImage
@@ -98,6 +98,8 @@ class ModManagerApp:
     # ============================================================
     def _get_dpi_scale_factor(self):
         """获取 Windows DPI 缩放因子（96 DPI = 1.0, 144 DPI = 1.5 等）"""
+        if sys.platform != "win32":
+            return 1.0
         try:
             import ctypes
             user32 = ctypes.windll.user32
@@ -862,12 +864,14 @@ class ModManagerApp:
             return stored_path
 
         norm = os.path.normpath(stored_path)
-        if "\\Mods\\" in norm:
-            alt = norm.replace("\\Mods\\", "\\Disabled_Mods\\")
+        mods_sep = f"{os.sep}Mods{os.sep}"
+        disabled_sep = f"{os.sep}Disabled_Mods{os.sep}"
+        if mods_sep in norm:
+            alt = norm.replace(mods_sep, disabled_sep)
             if os.path.isfile(alt):
                 return alt
-        elif "\\Disabled_Mods\\" in norm:
-            alt = norm.replace("\\Disabled_Mods\\", "\\Mods\\")
+        elif disabled_sep in norm:
+            alt = norm.replace(disabled_sep, mods_sep)
             if os.path.isfile(alt):
                 return alt
         return ""
@@ -1087,11 +1091,58 @@ class ModManagerApp:
     # ============================================================
     # 分组管理
     # ============================================================
+    def _show_input_dialog(self, title, prompt):
+        result = [None]
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(title)
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(dialog, text=prompt).pack(padx=20, pady=(20, 10))
+        entry = ctk.CTkEntry(dialog, width=250)
+        entry.pack(padx=20, pady=(0, 20))
+        entry.focus()
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        def _ok():
+            result[0] = entry.get()
+            dialog.destroy()
+
+        def _cancel():
+            dialog.destroy()
+
+        ctk.CTkButton(btn_frame, text=t("dialog.ok", "确定"), command=_ok).pack(
+            side="left", expand=True, fill="x", padx=(0, 5))
+        ctk.CTkButton(btn_frame, text=t("dialog.cancel", "取消"), command=_cancel).pack(
+            side="right", expand=True, fill="x", padx=(5, 0))
+
+        entry.bind("<Return>", lambda e: _ok())
+        dialog.bind("<Escape>", lambda e: _cancel())
+
+        dialog.update_idletasks()
+        dw = dialog.winfo_width()
+        dh = dialog.winfo_height()
+        px = self.root.winfo_rootx()
+        py = self.root.winfo_rooty()
+        pw = self.root.winfo_width()
+        ph = self.root.winfo_height()
+        x = max(0, px + (pw - dw) // 2)
+        y = max(0, py + (ph - dh) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+        dialog.grab_set()
+        self.root.wait_window(dialog)
+        return result[0]
+
     def _create_group(self):
-        result = simpledialog.askstring(
+        result = self._show_input_dialog(
             t("group_dialog.title_create", "新建分组"),
-            t("group_dialog.prompt_name", "输入分组名称："),
-            parent=self.root)
+            t("group_dialog.prompt_name", "输入分组名称："))
         if result and result.strip():
             gname = result.strip()
             groups = ConfigManager.get_mod_groups()
@@ -1108,11 +1159,14 @@ class ModManagerApp:
             self._refresh()
 
     def _manage_groups(self):
-        groups = ConfigManager.get_mod_groups()
-        order = ConfigManager.get_group_order()
-        ordered_groups = [g for g in order if g in groups]
-        other_groups = [g for g in groups if g not in ordered_groups]
-        all_groups = ordered_groups + other_groups
+        def _get_ordered():
+            groups = ConfigManager.get_mod_groups()
+            order = ConfigManager.get_group_order()
+            ordered_groups = [g for g in order if g in groups]
+            other_groups = [g for g in groups if g not in ordered_groups]
+            return groups, order, ordered_groups + other_groups
+
+        groups, order, all_groups = _get_ordered()
 
         if not all_groups:
             messagebox.showinfo(
@@ -1144,6 +1198,7 @@ class ModManagerApp:
         info_label.pack(fill="x", padx=16, pady=(2, 8))
 
         selected_group = [None]
+        group_buttons = {}
 
         def select_group(gname):
             selected_group[0] = gname
@@ -1158,7 +1213,33 @@ class ModManagerApp:
                 else:
                     btn.configure(fg_color=("gray85", "gray25"))
 
-        group_buttons = {}
+        def _rebuild_dialog():
+            nonlocal groups, order, all_groups
+            groups, order, all_groups = _get_ordered()
+            if not all_groups:
+                dialog.destroy()
+                self._refresh()
+                return
+            selected_group[0] = None
+            info_label.configure(text="")
+            for w in list_frame.winfo_children():
+                w.destroy()
+            group_buttons.clear()
+            for gname in all_groups:
+                mod_count = len(groups.get(gname, []))
+                btn = ctk.CTkButton(
+                    list_frame, text=f"📁 {gname}  ({mod_count} Mods)",
+                    anchor="w",
+                    font=self._font(11),
+                    fg_color=("gray85", "gray25"),
+                    hover_color=("gray75", "gray35"),
+                    text_color=("gray20", "gray85"),
+                    command=lambda g=gname: select_group(g),
+                )
+                btn.pack(fill="x", pady=2)
+                group_buttons[gname] = btn
+            self._refresh()
+
         for gname in all_groups:
             btn = ctk.CTkButton(
                 list_frame, text=f"📁 {gname}  ({len(groups[gname])} Mods)",
@@ -1182,10 +1263,9 @@ class ModManagerApp:
                     t("dialog.title_warning", "提示"),
                     t("group_dialog.select_first", "请先选择一个分组"))
                 return
-            new_name = simpledialog.askstring(
+            new_name = self._show_input_dialog(
                 t("group_dialog.title_rename", "重命名分组"),
-                t("group_dialog.prompt_rename", "将 \"{name}\" 重命名为：").format(name=gname),
-                parent=dialog)
+                t("group_dialog.prompt_rename", "将 \"{name}\" 重命名为：").format(name=gname))
             if new_name and new_name.strip() and new_name.strip() != gname:
                 nn = new_name.strip()
                 if nn in groups:
@@ -1198,8 +1278,7 @@ class ModManagerApp:
                     order[order.index(gname)] = nn
                 ConfigManager.set_mod_groups(groups)
                 ConfigManager.set_group_order(order)
-                dialog.destroy()
-                self._refresh()
+                _rebuild_dialog()
 
         def delete_group():
             gname = selected_group[0]
@@ -1213,14 +1292,37 @@ class ModManagerApp:
                     order.remove(gname)
                 ConfigManager.set_mod_groups(groups)
                 ConfigManager.set_group_order(order)
-                dialog.destroy()
-                self._refresh()
+                _rebuild_dialog()
+
+        def create_group():
+            result = self._show_input_dialog(
+                t("group_dialog.title_create", "新建分组"),
+                t("group_dialog.prompt_name", "输入分组名称："))
+            if result and result.strip():
+                gname = result.strip()
+                if gname in groups:
+                    messagebox.showwarning(
+                        t("group_dialog.already_exists", "已存在"),
+                        t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=gname))
+                    return
+                groups[gname] = []
+                if not order:
+                    order.append(gname)
+                else:
+                    idx = order.index(selected_group[0]) + 1 if selected_group[0] in order else len(order)
+                    order.insert(idx, gname)
+                ConfigManager.set_mod_groups(groups)
+                ConfigManager.set_group_order(order)
+                _rebuild_dialog()
 
         ctk.CTkButton(btn_row, text=t("group_dialog.btn_rename", "✏️ 重命名"), width=80,
                       command=rename_group).pack(side="left", padx=(0, 8))
         ctk.CTkButton(btn_row, text=t("group_dialog.btn_delete", "🗑️ 删除分组"), width=80,
                       fg_color="#da3633", hover_color="#f85149",
-                      command=delete_group).pack(side="left")
+                      command=delete_group).pack(side="left", padx=(0, 8))
+        ctk.CTkButton(btn_row, text=t("group_dialog.btn_create", "➕ 新建"), width=80,
+                      fg_color="#2ea043", hover_color="#3fb950",
+                      command=create_group).pack(side="left")
         ctk.CTkButton(btn_row, text=t("group_dialog.btn_close", "关闭"), width=60,
                       command=dialog.destroy).pack(side="right")
 
@@ -1317,12 +1419,9 @@ class ModManagerApp:
 
     def _edit_note(self, mod):
         name = mod["name"]
-        current = ConfigManager.get_mod_notes().get(name, "")
-        result = simpledialog.askstring(
+        result = self._show_input_dialog(
             t("note_dialog.title", "编辑备注"),
-            t("note_dialog.prompt", "为 Mod \"{name}\" 设置备注名称：").format(name=name),
-            initialvalue=current, parent=self.root,
-        )
+            t("note_dialog.prompt", "为 Mod \"{name}\" 设置备注名称：").format(name=name))
         if result is not None:
             ConfigManager.set_mod_note(name, result.strip())
             self._refresh()
@@ -1362,9 +1461,6 @@ class ModManagerApp:
         if not HAS_PIL or not os.path.isfile(image_path):
             return
         try:
-            from PIL import ImageTk
-            import tkinter as tk
-
             pil_img = Image.open(image_path)
             orig_w, orig_h = pil_img.size
 
@@ -1383,19 +1479,18 @@ class ModManagerApp:
                 new_w, new_h = orig_w, orig_h
                 display_img = pil_img
 
-            win = tk.Toplevel(self.root)
+            win = ctk.CTkToplevel(self.root)
             win.title(t("preview.title", "图片预览 - {name}").format(name=os.path.basename(image_path)))
             win.geometry(f"{new_w}x{new_h}")
             win.resizable(False, False)
-            win.configure(bg="black")
 
             x = (screen_w - new_w) // 2
             y = (screen_h - new_h) // 2
             win.geometry(f"+{x}+{y}")
 
-            tk_img = ImageTk.PhotoImage(display_img)
-            img_label = tk.Label(win, image=tk_img, bg="black", cursor="hand2")
-            img_label.image = tk_img
+            ctk_img = CTkImage(light_image=display_img, dark_image=display_img, size=(new_w, new_h))
+            img_label = ctk.CTkLabel(win, image=ctk_img, text="", cursor="hand2")
+            img_label.image = ctk_img
             img_label.pack(fill="both", expand=True)
 
             def close_win(e=None):

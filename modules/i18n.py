@@ -19,21 +19,22 @@ def _get_app_dir():
 
 
 def _detect_system_language():
-    """通过 Windows API 检测用户界面语言，返回语言代码或 None。"""
-    try:
-        windll = ctypes.windll.kernel32
-        lang_id = windll.GetUserDefaultUILanguage()
-        primary = lang_id & 0x3FF
-        if primary == 0x04:
-            return "zh"
-        if primary == 0x09:
-            return "en"
-        if primary == 0x11:
-            return "ja"
-        if primary == 0x12:
-            return "ko"
-    except Exception:
-        pass
+    """通过系统 API 检测用户界面语言，返回语言代码或 None。"""
+    if sys.platform == "win32":
+        try:
+            windll = ctypes.windll.kernel32
+            lang_id = windll.GetUserDefaultUILanguage()
+            primary = lang_id & 0x3FF
+            if primary == 0x04:
+                return "zh"
+            if primary == 0x09:
+                return "en"
+            if primary == 0x11:
+                return "ja"
+            if primary == 0x12:
+                return "ko"
+        except Exception:
+            pass
 
     try:
         sys_locale = locale.getdefaultlocale()[0]

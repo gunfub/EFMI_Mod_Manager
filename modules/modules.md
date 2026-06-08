@@ -183,10 +183,10 @@ Mod 文件夹的扫描、验证、移动（启用/禁用）、README 检测。**
 | `validate()` | — | `(bool, str, bool)` | 校验路径有效性。返回 `(是否有效, 错误信息, 是否自动创建了 Disabled_Mods)` |
 | `scan_mods()` | — | `list[dict]` | 扫描 Mods/Disabled_Mods 目录，返回 `[{"name": ..., "enabled": True/False, "path": ...}, ...]` |
 | `check_readme_files(mod_name, enabled)` | `mod_name: str, enabled: bool` | `list[(fname, fpath)]` | 检查指定 Mod 目录下的 README 文件，返回存在的文件名和路径列表 |
-| `open_file(filepath)` | `filepath: str` | — | 用系统默认程序打开文件（`os.startfile`） |
+| `open_file(filepath)` | `filepath: str` | — | 用系统默认程序打开文件（Windows: `os.startfile`，macOS: `open`，Linux: `xdg-open`）。通过模块级 `_open_in_os()` 封装实现 |
 | `toggle_mod(mod_name, currently_enabled, progress_callback=None)` | `mod_name: str, currently_enabled: bool, progress_callback: callable` | — | 移动单个 Mod 文件夹（Mods ↔ Disabled_Mods）。失败抛出异常。callback 签名 `(current, total, bytes_done, status)` |
 | `toggle_mods_batch(mod_list, enable, progress_callback=None, file_progress_callback=None)` | `mod_list: list[dict], enable: bool, progress_callback: callable, file_progress_callback: callable` | `list[(name, ok, err)]` | 批量移动。跳过已处于目标状态的 Mod。返回结果列表 |
-| `open_mod_folder(mod_name, enabled)` | `mod_name: str, enabled: bool` | — | 用资源管理器打开 Mod 文件夹（`os.startfile`） |
+| `open_mod_folder(mod_name, enabled)` | `mod_name: str, enabled: bool` | — | 用文件管理器打开 Mod 文件夹，同样通过 `_open_in_os()` 跨平台分发 |
 | `_move_with_progress(src, dst, progress_callback=None)` | `src: str, dst: str, callback` | — | **内部方法**。先尝试 `os.rename`（同盘快速移动），失败则逐文件 `shutil.copy2` + `shutil.rmtree`。通过 callback 报告进度 |
 
 ### 移动策略
@@ -218,7 +218,7 @@ Mod 文件夹的扫描、验证、移动（启用/禁用）、README 检测。**
 | `redirect_stderr_to_null()` | — | 将 `sys.stderr` 重定向到 `os.devnull`，保存原始 stderr。**必须在 import 任何第三方库之前调用** |
 | `suppress_pkg_resources_warning()` | — | 使用 message-based 过滤抑制 `pkg_resources` 弃用警告（兼容 PyInstaller 的 `pyimod02_importers.py` 发出的警告） |
 | `restore_stderr()` | — | 恢复原始 stderr（调试模式时调用）。关闭 devnull 文件对象并还原 |
-| `setup_console_visibility(app_dir)` | `app_dir: str` — 程序所在目录 | 检查 `app_dir/debug_mode` 文件：存在→恢复 stderr + 分配/显示控制台；不存在→保持 stderr 重定向 + 隐藏/释放控制台 |
+| `setup_console_visibility(app_dir)` | `app_dir: str` — 程序所在目录 | 检查 `app_dir/debug_mode` 文件：存在→恢复 stderr + 分配/显示控制台；不存在→保持 stderr 重定向 + 隐藏/释放控制台。**非 Windows 平台仅恢复 stderr，跳过控制台操作** |
 
 #### 内部函数
 
@@ -292,9 +292,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 #### 系统语言检测
 
 内部函数 `_detect_system_language()`：
-1. 通过 Windows `GetUserDefaultUILanguage` API 获取 UI 语言 ID
+1. Windows 下通过 `GetUserDefaultUILanguage` API 获取 UI 语言 ID
 2. 主语言 ID `0x04` → `"zh"`；`0x09` → `"en"`；`0x11` → `"ja"`；`0x12` → `"ko"`
-3. 降级到 Python `locale.getdefaultlocale()` 再做一次检测
+3. 非 Windows 或 API 调用失败时，降级到 Python `locale.getdefaultlocale()` 再做一次检测
 4. 都失败则返回 `None`
 
 #### 语言降级策略
@@ -389,7 +389,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | `_get_sort_key(display)` (static) | 返回 `(sort_key, display_lower)` 元组用于排序；中文 → 拼音首字母，英文 → 自身首字母，无拼音则归入 `'#'` |
 | `_get_index_letter(display)` (static) | 返回显示名的索引字母（大写 A-Z 或 `'#'`）；中文通过 pypinyin 获取拼音首字母 |
 | `_font(base_size, weight=None)` | 根据当前 DPI 缩放返回 `CTkFont` |
-| `_get_dpi_scale_factor()` | 通过 Windows API 获取 DPI 缩放因子 |
+| `_get_dpi_scale_factor()` | 通过 Windows API 获取 DPI 缩放因子（非 Windows 返回 1.0） |
 
 #### 多语言（私有方法）
 
@@ -430,8 +430,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 | 方法 | 说明 |
 |------|------|
-| `_create_group()` | 弹出输入框创建新分组 |
-| `_manage_groups()` | 弹出管理分组对话框（重命名/删除） |
+| `_create_group()` | 弹出输入框创建新分组（通过 `_show_input_dialog` 实现） |
+| `_manage_groups()` | 弹出管理分组对话框（重命名/删除/**新建**）。操作后对话框保持打开，可连续管理多个分组，关闭按钮或删除最后一个分组时自动关闭 |
+| `_show_input_dialog(title, prompt)` | 弹出 CTkToplevel 模态输入对话框，按钮文本通过 i18n 支持多语言（确定/OK/キャンセル/확인 等），自动居中于主窗口 |
 | `_show_more_menu(mod)` | 显示 Mod 的「更多操作」弹出菜单（编辑备注/预览图/分组） |
 | `_toggle_mod_group(mod, gname, add)` | 将 Mod 加入/移出指定分组并刷新 |
 
@@ -442,7 +443,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | `_resolve_preview_path(mod_path, stored_path)` (static) | 解析预览图实际路径。相对路径拼到 `mod_path` 后；绝对路径若文件不存在，尝试交换 `Mods\` / `Disabled_Mods\` 以适配 Mod 开关后的位置变化 |
 | `_set_preview_image(mod)` | 选择预览图片：若图片在 Mod 文件夹内 → 存相对路径；否则存绝对路径 |
 | `_clear_preview_image(mod)` | 清除 Mod 的预览图 |
-| `_show_full_image(image_path)` | 点击缩略图 → 弹出独立窗口全屏查看原图（≤屏幕 60%） |
+| `_show_full_image(image_path)` | 点击缩略图 → 弹出 CTkToplevel 独立窗口使用 CTkImage + CTkLabel 全屏查看原图（≤屏幕 60%），点击/滚轮/Esc 关闭 |
 | `_edit_note(mod)` | 编辑 Mod 备注（显示名称） |
 | `_clear_note(mod)` | 清除 Mod 备注 |
 
@@ -487,6 +488,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │ 2. redirect_stderr_to_null()       ← console_setup.py        │
 │ 3. suppress_pkg_resources_warning() ← console_setup.py       │
 │ 4. setup_console_visibility(_APP_DIR) ← console_setup.py     │
+│    (非 Windows 仅恢复 stderr)                                    │
 │ 5. init_i18n() + set_language()    ← i18n.py + config.py     │
 │ 6. import ModManagerApp            ← gui.py                  │
 │ 7. main() → ModManagerApp().run()                            │

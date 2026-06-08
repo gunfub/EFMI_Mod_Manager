@@ -2,7 +2,7 @@
 
 [English](README_EN.md) | **中文**
 
-基于 `customtkinter` 的 Windows PC Mod 管理器，通过移动文件夹的方式来启用/禁用 Mod。
+基于 `customtkinter` 的 Mod 管理器，通过移动文件夹的方式来启用/禁用 Mod。主支持 Windows，兼容 Linux 与 macOS。
 
 > **重要声明**：EFMI Mod Manager 不负责 Mod 的加载、解析或注入。Mod 的加载与运行时逻辑由 EFMI 在游戏启动阶段完成。本程序仅提供一个图形化的前端界面，用于快捷地启用或禁用 Mod —— 其底层实现仅是将 Mod 文件夹在 `Mods`（已启用）与 `Disabled_Mods`（已禁用）目录之间移动，以控制 EFMI 启动时应当加载哪些 Mod。本程序不修改任何 Mod 内容，也不参与 EFMI 的运行时行为。
 
@@ -16,9 +16,9 @@
 - **README 检测**：自动识别 Mod 文件夹中的 `README.md` / `README.txt` 等文件，一键打开
 - **多语言 A-Z 快速跳转**：侧边栏字母索引支持英文、中文拼音首字母（可选依赖 `pypinyin`），混合排序快速定位
 - **多语言界面**：自动检测系统语言，支持中文 / English / 日本語 / 한국어 切换
-- **DPI 动态缩放**：自适应 Windows 高 DPI 显示器
+- **DPI 动态缩放**：自适应 Windows 高 DPI 显示器（仅 Windows）
 - **暗色主题**：基于 customtkinter 的现代化暗色 UI
-- **控制台隐藏**：PyInstaller 打包后默认隐藏终端窗口（在程序目录创建 `debug_mode` 文件可显示）
+- **控制台隐藏**：PyInstaller 打包后默认隐藏终端窗口（仅 Windows；在程序目录创建 `debug_mode` 文件可显示）
 
 ## 运行截图
 
@@ -132,7 +132,7 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 ### 3. 分组管理
 
 - **新建分组**：工具栏点击 **➕ 新建分组**
-- **管理分组**：工具栏点击 **✏️ 管理分组**，可重命名或删除分组
+- **管理分组**：工具栏点击 **✏️ 管理分组**，可新建、重命名或删除分组，对话框保持打开支持连续操作
 - **添加 Mod 到分组**：点击 Mod 行右侧的 **⋯** 按钮 → **📁 添加到分组 / 移出分组**
 - **折叠分组**：点击分组标题栏左侧的箭头按钮
 

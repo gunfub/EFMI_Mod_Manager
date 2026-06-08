@@ -2,7 +2,7 @@
 
 **English** | [中文](README.md)
 
-A `customtkinter`-based Windows PC Mod manager that enables/disables Mods by moving folders.
+A `customtkinter`-based Mod manager that enables/disables Mods by moving folders. Primarily supports Windows, with Linux and macOS compatibility.
 
 > **Important**: EFMI Mod Manager does not handle Mod loading, parsing, or injection. Mod loading and runtime logic is performed by EFMI during game startup. This program only provides a graphical frontend for quickly enabling or disabling Mods — under the hood, it simply moves Mod folders between the `Mods` (enabled) and `Disabled_Mods` (disabled) directories to control which Mods EFMI should load at startup. This program does not modify any Mod content, nor does it participate in EFMI's runtime behavior.
 
@@ -15,9 +15,9 @@ A `customtkinter`-based Windows PC Mod manager that enables/disables Mods by mov
 - **Preview Images**: Set preview thumbnails for each Mod, click to view full-size
 - **README Detection**: Automatically detects `README.md` / `README.txt` files in Mod folders, one-click open
 - **Multi-language UI**: Auto-detects system language, supports 中文 / English / 日本語 / 한국어 switching
-- **DPI Dynamic Scaling**: Adapts to Windows high-DPI displays
+- **DPI Dynamic Scaling**: Adapts to Windows high-DPI displays (Windows only)
 - **Dark Theme**: Modern dark UI based on customtkinter
-- **Console Hidden**: Terminal window hidden by default after PyInstaller packaging (create a `debug_mode` file in the program directory to show it)
+- **Console Hidden**: Terminal window hidden by default after PyInstaller packaging (Windows only; create a `debug_mode` file in the program directory to show it)
 
 ## Screenshots
 
@@ -131,7 +131,7 @@ Click **📁 Browse** in the top bar to select the game root directory containin
 ### 3. Group Management
 
 - **Create a new group**: Click **➕ New Group** in the toolbar
-- **Manage groups**: Click **✏️ Manage Groups** in the toolbar to rename or delete groups
+- **Manage groups**: Click **✏️ Manage Groups** in the toolbar to create, rename, or delete groups. Dialog stays open for consecutive operations.
 - **Add Mod to a group**: Click the **⋯** button on the right of a Mod row → **📁 Add to / Remove from Group**
 - **Collapse group**: Click the arrow button on the left side of the group header bar
 

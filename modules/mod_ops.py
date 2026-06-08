@@ -5,9 +5,20 @@ Mod 扫描、启用/禁用（文件夹移动）、README 检测等。
 """
 
 import os
+import sys
 import shutil
+import subprocess
 from modules.config import README_NAMES
 from modules.i18n import t
+
+
+def _open_in_os(path):
+    if sys.platform == "win32":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 class ModManager:
@@ -60,7 +71,7 @@ class ModManager:
 
     def open_file(self, filepath):
         if os.path.isfile(filepath):
-            os.startfile(filepath)
+            _open_in_os(filepath)
 
     def toggle_mod(self, mod_name, currently_enabled, progress_callback=None):
         if currently_enabled:
@@ -138,4 +149,4 @@ class ModManager:
         base = self.mods_dir if enabled else self.disabled_dir
         path = os.path.join(base, mod_name)
         if os.path.isdir(path):
-            os.startfile(path)
+            _open_in_os(path)
