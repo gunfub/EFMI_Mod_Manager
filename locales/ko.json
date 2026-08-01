@@ -17,7 +17,9 @@
     "batch_enable": "일괄 활성화",
     "batch_disable": "일괄 비활성화",
     "new_group": "➕ 새 그룹",
-    "manage_groups": "✏️ 그룹 관리"
+    "manage_groups": "✏️ 그룹 관리",
+    "view_list": "☷ 목록",
+    "view_card": "▦ 카드"
   },
   "mod_list": {
     "empty": "Mod 폴더를 찾을 수 없습니다",
@@ -27,7 +29,8 @@
     "arrow_expanded": "▼",
     "count_suffix": " {count}개",
     "status_enabled": "활성화",
-    "status_disabled": "비활성화"
+    "status_disabled": "비활성화",
+    "no_preview": "미리보기 없음"
   },
   "group_dialog": {
     "title_create": "새 그룹",

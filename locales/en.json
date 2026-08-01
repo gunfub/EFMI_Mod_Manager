@@ -17,7 +17,9 @@
     "batch_enable": "Batch Enable",
     "batch_disable": "Batch Disable",
     "new_group": "➕ New Group",
-    "manage_groups": "✏️ Manage Groups"
+    "manage_groups": "✏️ Manage Groups",
+    "view_list": "☷ List",
+    "view_card": "▦ Cards"
   },
   "mod_list": {
     "empty": "No mod folders found",
@@ -27,7 +29,8 @@
     "arrow_expanded": "▼",
     "count_suffix": " {count} mod(s)",
     "status_enabled": "Enabled",
-    "status_disabled": "Disabled"
+    "status_disabled": "Disabled",
+    "no_preview": "No preview"
   },
   "group_dialog": {
     "title_create": "New Group",

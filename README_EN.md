@@ -11,9 +11,11 @@ A `customtkinter`-based Mod manager that enables/disables Mods by moving folders
 - **Mod Management**: Scans `Mods` and `Disabled_Mods` folders, one-click toggle enable/disable
 - **Batch Operations**: Select all, invert selection, batch enable, batch disable
 - **Group Management**: Create, rename, delete groups; collapse/expand groups
+- **Dual View Modes**: Switch between a detailed list and 16:9 preview cards, with the last choice remembered
+- **Responsive Card Layout**: Keeps cards at a consistent size, adds columns on wider windows, and aligns groups consistently
 - **Custom Notes**: Set custom display names for each Mod
-- **Preview Images**: Set preview thumbnails for each Mod, click to view full-size
-- **README Detection**: Automatically detects `README.md` / `README.txt` files in Mod folders, one-click open
+- **Preview Images**: Set preview thumbnails, click to view full-size, and show placeholders when no image is available
+- **README Detection**: Recognizes common Chinese, English, Japanese, and Korean README names; card view includes a multi-file selection menu
 - **Multi-language UI**: Auto-detects system language, supports 中文 / English / 日本語 / 한국어 switching
 - **DPI Dynamic Scaling**: Adapts to Windows high-DPI displays (Windows only)
 - **Dark Theme**: Modern dark UI based on customtkinter
@@ -125,8 +127,10 @@ Click **📁 Browse** in the top bar to select the game root directory containin
 
 ### 2. Manage Mods
 
-- **Enable/Disable a single Mod**: Click the switch button on the right side of each Mod row
+- **Switch views**: Use the **List / Cards** control on the right side of the toolbar; the selection is saved automatically
+- **Enable/Disable a single Mod**: Click the switch in a Mod row or card
 - **Batch operations**: Check the checkboxes in front of Mods (or use the group checkbox to select all in a group), then click **Batch Enable** or **Batch Disable**
+- **Card layout**: Cards keep a consistent size and gain columns as the window gets wider; each group is centered while cards remain left-aligned inside its grid
 
 ### 3. Group Management
 
@@ -145,6 +149,8 @@ Click the **⋯** button on the right of a Mod row:
 | 🖼️ Set Preview | Select an image as the Mod thumbnail |
 | 📁 Group Actions | Add or remove a Mod from groups |
 | 🗑️ Clear Note/Preview | Remove existing notes or preview images |
+
+README files appear in each Mod's action area. List view shows them individually. In card view, a single README opens directly; multiple files use a **📄 README xN** button with a selection menu. Supported names include `.md` / `.txt` variants with common language suffixes such as `ZH`, `CN`, `CHS`, `TW`, `EN`, `JA`, `JP`, `KO`, and `KR`.
 
 ### 5. Quick Jump
 
@@ -169,7 +175,8 @@ Click the language dropdown in the top bar to switch between languages. Availabl
 
 Program configuration is saved in `mod_manager_config.json` (in the same directory as the program):
 
-- `language`: Language setting (`"auto"`, `"zh"`, `"en"`)
+- `language`: Language setting (`"auto"`, `"zh"`, `"en"`, `"ja"`, `"ko"`)
+- `view_mode`: Mod display mode (`"list"` or `"card"`)
 - `game_path`: Game directory path
 - `mod_notes`: Mod display names
 - `mod_images`: Mod preview image paths (relative paths for images inside Mod folders, absolute paths for external images)
@@ -201,7 +208,7 @@ locales/
 `mod_manager.py` → `console_setup.py` + `i18n.py` (startup phase)  
 `mod_manager.py` → `gui.py` → `config.py` + `mod_ops.py`
 
-For detailed documentation, see [modules/modules.md](modules/modules.md).
+For detailed documentation, see [English Modules Documentation](modules/modules_EN.md) / [中文模块文档](modules/modules.md).
 
 ## Tech Stack
 

@@ -21,12 +21,61 @@ def get_app_dir():
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "mod_manager_config.json")
 
-README_NAMES = ["README.md", "README_ZH.md", "README.txt", "README_ZH.txt"]
+README_NAMES = [
+    "README.md",
+    "README_ZH.md",
+    "README_CN.md",
+    "README_ZH_CN.md",
+    "README_CHS.md",
+    "README_TW.md",
+    "README_ZH_TW.md",
+    "README_CHT.md",
+    "README_EN.md",
+    "README_JA.md",
+    "README_JP.md",
+    "README_KO.md",
+    "README_KR.md",
+    "README.txt",
+    "README_ZH.txt",
+    "README_CN.txt",
+    "README_ZH_CN.txt",
+    "README_CHS.txt",
+    "README_TW.txt",
+    "README_ZH_TW.txt",
+    "README_CHT.txt",
+    "README_EN.txt",
+    "README_JA.txt",
+    "README_JP.txt",
+    "README_KO.txt",
+    "README_KR.txt",
+]
 README_LABELS = {
     "README.md": "📄 README.md",
     "README_ZH.md": "📄 README_ZH.md",
+    "README_CN.md": "📄 README_CN.md",
+    "README_ZH_CN.md": "📄 README_ZH_CN.md",
+    "README_CHS.md": "📄 README_CHS.md",
+    "README_TW.md": "📄 README_TW.md",
+    "README_ZH_TW.md": "📄 README_ZH_TW.md",
+    "README_CHT.md": "📄 README_CHT.md",
+    "README_EN.md": "📄 README_EN.md",
+    "README_JA.md": "📄 README_JA.md",
+    "README_JP.md": "📄 README_JP.md",
+    "README_KO.md": "📄 README_KO.md",
+    "README_KR.md": "📄 README_KR.md",
     "README.txt": "📄 README.txt",
     "README_ZH.txt": "📄 README_ZH.txt",
+    "README_CN.txt": "📄 README_CN.txt",
+    "README_ZH_CN.txt": "📄 README_ZH_CN.txt",
+    "README_CHS.txt": "📄 README_CHS.txt",
+    "README_TW.txt": "📄 README_TW.txt",
+    "README_ZH_TW.txt": "📄 README_ZH_TW.txt",
+    "README_CHT.txt": "📄 README_CHT.txt",
+    "README_EN.txt": "📄 README_EN.txt",
+    "README_JA.txt": "📄 README_JA.txt",
+    "README_KO.txt": "📄 README_KO.txt",
+    "README_JP.txt": "📄 README_JP.txt",
+    "README_KR.txt": "📄 README_KR.txt",
 }
 
 
@@ -125,6 +174,19 @@ class ConfigManager:
     def set_language(lang):
         config = ConfigManager.load()
         config["language"] = lang
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_view_mode():
+        mode = ConfigManager.load().get("view_mode", "list")
+        return mode if mode in ("list", "card") else "list"
+
+    @staticmethod
+    def set_view_mode(mode):
+        if mode not in ("list", "card"):
+            return
+        config = ConfigManager.load()
+        config["view_mode"] = mode
         ConfigManager.save(config)
 
     @staticmethod

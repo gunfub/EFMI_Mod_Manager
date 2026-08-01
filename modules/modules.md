@@ -2,6 +2,8 @@
 
 > 本文档详细描述 `modules/` 文件夹中每个 Python 模块的职责、公共接口、调用关系与实现细节。
 
+**中文** | [English](modules_EN.md)
+
 ---
 
 ## 目录
@@ -122,11 +124,19 @@ mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
 | `get_language()` | 返回配置中的语言设置，默认 `"auto"` |
 | `set_language(lang)` | 设置语言（`"auto"`, `"zh"`, `"en"` 等）并保存 |
 
+#### 视图设置
+
+| 方法 | 说明 |
+|------|------|
+| `get_view_mode()` | 返回 Mod 显示模式：`"list"` 或 `"card"`；无效值自动回退到 `"list"` |
+| `set_view_mode(mode)` | 保存显示模式；仅接受 `"list"` / `"card"` |
+
 ### 配置文件结构 (`mod_manager_config.json`)
 
 ```json
 {
   "language": "auto",
+  "view_mode": "card",
   "game_path": "D:/Games/MyGame",
   "mod_notes": {
     "mod_abc": "My Custom Name"
@@ -146,7 +156,7 @@ mod_manager.py          ← 入口文件，启动初始化 + 导入 GUI
 
 ### 被调用于
 
-- `mod_manager.py`（间接，不直接引用）
+- `mod_manager.py`（启动时读取语言配置）
 - `modules/gui.py`（`from modules.config import ConfigManager, README_LABELS`）
 - `modules/mod_ops.py`（`from modules.config import README_NAMES`）
 
@@ -195,6 +205,16 @@ Mod 文件夹的扫描、验证、移动（启用/禁用）、README 检测。**
 2. **跨盘**：`shutil.copy2()` 逐文件复制 + `shutil.rmtree()` 删除源目录，保留文件元数据
 
 两种方式都通过 `progress_callback(current, total, bytes_done, status)` 上报进度。
+
+### README 文件名兼容
+
+`check_readme_files()` 按 `config.py` 中 `README_NAMES` 的顺序检测文件。支持基础名称 `README.md` / `README.txt`，以及中、英、日、韩常见语言后缀：
+
+- 中文：`ZH`、`CN`、`ZH_CN`、`CHS`、`TW`、`ZH_TW`、`CHT`
+- 英文：`EN`
+- 日文：`JA`、`JP`
+- 韩文：`KO`、`KR`
+- 所有后缀均支持 `.md` 与 `.txt`
 
 ### 被调用于
 
@@ -346,7 +366,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 ### 职责
 
-基于 `customtkinter` 的 Mod 管理器主窗口，包含完整的 UI 构建、事件处理、分组管理、预览图、批量操作等功能。
+基于 `customtkinter` 的 Mod 管理器主窗口，包含列表/卡片双视图、响应式卡片布局、事件处理、分组管理、预览图、README 菜单和批量操作等功能。
 
 ### 依赖
 
@@ -365,13 +385,15 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 | 属性 | 值 | 说明 |
 |------|-----|------|
-| `PREVIEW_SIZE` | `48` | Mod 预览缩略图的尺寸（像素） |
+| `PREVIEW_SIZE` | `(85, 48)` | 列表模式 Mod 预览缩略图的 16:9 逻辑尺寸 |
+| `CARD_WIDTH` | `256` | 卡片模式固定逻辑宽度（当前 125% DPI 下约 320px） |
+| `CARD_GAP` | `4` | 卡片网格的逻辑间距 |
 
 #### 构造与运行
 
 | 方法 | 说明 |
 |------|------|
-| `__init__()` | 初始化：设置 Dark 主题、创建主窗口、绑定快捷键、构建 UI、加载配置并刷新 |
+| `__init__()` | 初始化：设置 Dark 主题、创建主窗口、读取视图偏好、构建 UI，并延迟首次刷新直到布局宽度可用 |
 | `run()` | 启动主事件循环 `self.root.mainloop()` |
 
 #### UI 构建（私有方法，前缀 `_`）
@@ -390,6 +412,12 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | `_get_index_letter(display)` (static) | 返回显示名的索引字母（大写 A-Z 或 `'#'`）；中文通过 pypinyin 获取拼音首字母 |
 | `_font(base_size, weight=None)` | 根据当前 DPI 缩放返回 `CTkFont` |
 | `_get_dpi_scale_factor()` | 通过 Windows API 获取 DPI 缩放因子（非 Windows 返回 1.0） |
+| `_view_mode_labels()` | 返回列表/卡片分段按钮当前语言的显示文本 |
+| `_on_view_mode_change(selected_label)` | 切换列表/卡片模式、保存配置并重建 Mod 区域 |
+| `_get_card_column_count(measured_width=None)` | 根据可用宽度、固定卡片宽度和间距动态计算列数 |
+| `_watch_card_area()` | 定时读取滚动 Canvas 的实际宽度；仅当列数变化时触发卡片重排 |
+| `_refresh_card_columns()` | 重排卡片列数，并恢复 Mod 勾选与分组复选框状态 |
+| `_fit_card_text(text, font, max_width)` (static) | 按自然边界将卡片标题限制为最多两行；连续长名称按字符回退，溢出加省略号 |
 
 #### 多语言（私有方法）
 
@@ -406,13 +434,23 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | 方法 | 说明 |
 |------|------|
 | `_browse_folder()` | 弹出文件夹选择对话框，设置游戏路径 |
-| `_load_config_and_refresh()` | 加载配置并刷新 Mod 列表 |
+| `_load_config_and_refresh(defer=False)` | 加载配置；启动时可延迟刷新以等待窗口布局完成 |
+| `_refresh_when_layout_ready(attempt=0)` | 等待滚动区获得可靠宽度后执行首次刷新，避免初始卡片列数错误 |
 | `_refresh()` | 校验路径 → 扫描 Mod → 清理失效数据 → 渲染列表 → 更新统计 → 重建字母栏 |
 | `_show_empty_state(message)` | 清空列表并显示提示文字 |
-| `_render_mod_list()` | 按分组渲染 Mod 列表（调用 `_create_group_section` + `_create_mod_row`） |
-| `_create_group_section(gname, mods, notes, images, is_collapsed)` | 创建分组标题栏（折叠按钮/复选框/名称/数量）和内容区 |
+| `_render_mod_list()` | 按分组和当前视图模式渲染 Mod；清理旧控件与缓存后调用分组构建方法 |
+| `_create_group_section(gname, mods, notes, images, is_collapsed)` | 创建分组标题和内容；列表模式生成行，卡片模式生成动态满列宽网格并整体居中 |
 | `_toggle_group_collapse(gname, btn)` | 切换分组的折叠/展开状态并持久化 |
 | `_create_mod_row(parent, mod, note, image_path)` | 创建单个 Mod 行（复选框/预览图/名称/README按钮/开关/状态/打开/更多） |
+| `_create_mod_card(parent, mod, note, image_path, index, columns, card_width)` | 创建固定宽度卡片：16:9 预览、两行标题、状态与紧凑操作区 |
+
+#### 列表与卡片布局
+
+- **列表模式**：保留详细信息行布局。有效图片显示可点击缩略图；无图、失效图片、加载失败或缺少 Pillow 时显示同尺寸占位符，使名称列对齐。
+- **卡片模式**：预览图位于上方并按 16:9 居中裁切；无图时显示占位符。备注和原名各最多两行。
+- **固定卡片宽度**：卡片不随窗口拉伸或因增加列数而缩小。窗口变宽时，仅在可完整容纳下一列时增加列数。
+- **分组对齐**：每个分组都按当前动态列数保留完整网格（包括空列）。满列网格整体居中，组内卡片从第 0 列左对齐排列，因此少量与大量 Mod 分组拥有相同左边界。
+- **响应式重排**：`_watch_card_area()` 以轻量轮询读取底层 Canvas 宽度；列数不变时不重绘，变化时保留已勾选 Mod。
 
 #### 复选框逻辑（私有方法）
 
@@ -434,6 +472,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | `_manage_groups()` | 弹出管理分组对话框（重命名/删除/**新建**）。操作后对话框保持打开，可连续管理多个分组，关闭按钮或删除最后一个分组时自动关闭 |
 | `_show_input_dialog(title, prompt)` | 弹出 CTkToplevel 模态输入对话框，按钮文本通过 i18n 支持多语言（确定/OK/キャンセル/확인 等），自动居中于主窗口 |
 | `_show_more_menu(mod)` | 显示 Mod 的「更多操作」弹出菜单（编辑备注/预览图/分组） |
+| `_show_readme_menu(button, readme_files)` | 卡片存在多个 README 时，在按钮下方显示暗色文件选择菜单，点击对应项打开文件 |
 | `_toggle_mod_group(mod, gname, add)` | 将 Mod 加入/移出指定分组并刷新 |
 
 #### 预览图（私有方法）
@@ -471,6 +510,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 - **UI 线程**：所有 `customtkinter`/`tkinter` 操作必须在主线程执行
 - **工作线程**：`toggle_mod()` / `toggle_mods_batch()` 在 `threading.Thread` 中异步执行
 - **主线程回调**：工作线程中的 UI 更新通过 `self.root.after(0, callback)` 调度到主线程
+- **尺寸监测**：`_watch_card_area()` 通过 `root.after(150, ...)` 在 UI 线程运行；只有动态列数变化时才重建卡片
 
 ### 被调用于
 
@@ -502,7 +542,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │   ├── _build_ui()           ← 构建全部 UI 控件               │
 │   │   ├── _build_alphabet_bar() ← A-Z 侧边栏                 │
 │   │   └── CTkOptionMenu     ← 语言切换下拉菜单               │
-│   └── _load_config_and_refresh() ← 首次加载                  │
+│   ├── _watch_card_area()     ← 监测响应式卡片列数             │
+│   └── _load_config_and_refresh(defer=True)                   │
+│       └── _refresh_when_layout_ready() ← 等待可靠布局宽度     │
 │                                                              │
 │ _refresh():                                                  │
 │   ├── ConfigManager.get_game_path()    ← config.py           │
@@ -511,7 +553,8 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │   │   └── scan_mods()                                        │
 │   ├── ConfigManager.cleanup_mod_data() ← config.py           │
 │   ├── _render_mod_list() → _create_group_section()           │
-│   │                     → _create_mod_row()                  │
+│   │                     ├→ _create_mod_row()                 │
+│   │                     └→ _create_mod_card()                │
 │   ├── _update_stats()                                        │
 │   └── _rebuild_alphabet_bar()                                │
 │                                                              │
@@ -529,6 +572,8 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 │   │   └── ModManager.toggle_mods_batch()                     │
 │   ├── 分组管理 → ConfigManager.set_mod_groups() etc.         │
 │   ├── 备注/预览 → ConfigManager.set_mod_note() etc.          │
+│   ├── 视图切换 → ConfigManager.set_view_mode()               │
+│   ├── 多 README → _show_readme_menu()                        │
 │   └── 更多菜单 → _show_more_menu()                           │
 └──────────────────────────────────────────────────────────────┘
 ```

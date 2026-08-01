@@ -11,9 +11,11 @@
 - **Mod 管理**：扫描 `Mods` 和 `Disabled_Mods` 文件夹，一键切换启用/禁用
 - **批量操作**：支持全选、反选、批量启用、批量禁用
 - **分组管理**：可创建、重命名、删除分组，支持折叠/展开分组
+- **双视图模式**：支持详细列表与 16:9 预览卡片，可记住上次选择
+- **响应式卡片布局**：固定卡片尺寸，窗口放大时自动增加列数，各分组保持统一对齐
 - **自定义备注**：为每个 Mod 设置自定义显示名称
-- **预览图片**：为每个 Mod 设置预览缩略图，点击可全屏查看原图
-- **README 检测**：自动识别 Mod 文件夹中的 `README.md` / `README.txt` 等文件，一键打开
+- **预览图片**：为每个 Mod 设置预览缩略图，点击可全屏查看原图；缺图时显示占位符
+- **README 检测**：识别中/英/日/韩常见 README 文件名；卡片模式支持多文件选择菜单
 - **多语言 A-Z 快速跳转**：侧边栏字母索引支持英文、中文拼音首字母（可选依赖 `pypinyin`），混合排序快速定位
 - **多语言界面**：自动检测系统语言，支持中文 / English / 日本語 / 한국어 切换
 - **DPI 动态缩放**：自适应 Windows 高 DPI 显示器（仅 Windows）
@@ -126,8 +128,10 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 
 ### 2. 管理 Mod
 
-- **启用/禁用单个 Mod**：点击 Mod 行右侧的开关按钮
+- **切换视图**：使用工具栏右侧的 **列表 / 卡片** 按钮切换显示方式，选择会自动保存
+- **启用/禁用单个 Mod**：点击 Mod 行或卡片中的开关按钮
 - **批量操作**：勾选 Mod 前的复选框（或使用分组复选框全选该组），点击 **批量启用** 或 **批量禁用**
+- **卡片布局**：卡片保持固定尺寸，窗口变宽时自动增加列数；每个分组整体居中，卡片从左侧依次排列
 
 ### 3. 分组管理
 
@@ -147,6 +151,8 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 | 📁 分组操作 | 将 Mod 加入或移出分组 |
 | 🗑️ 清除备注/预览图 | 移除已设置的备注或预览图 |
 
+README 文件会显示在 Mod 的操作区。列表模式会逐个显示；卡片模式只有一个 README 时直接打开，有多个时显示 **📄 README xN**，点击后从菜单中选择文件。支持 `.md` / `.txt` 以及 `ZH`、`CN`、`CHS`、`TW`、`EN`、`JA`、`JP`、`KO`、`KR` 等常见语言后缀。
+
 ### 5. 快速跳转
 
 右侧 A-Z 侧边栏采用两级索引：
@@ -160,7 +166,8 @@ uv run pyinstaller --name "EFMI_Mod_Manager" mod_manager.py
 
 程序配置保存在 `mod_manager_config.json`（与程序同目录），包含：
 
-- `language`：语言设置（`"auto"`, `"zh"`, `"en"`）
+- `language`：语言设置（`"auto"`, `"zh"`, `"en"`, `"ja"`, `"ko"`）
+- `view_mode`：Mod 显示模式（`"list"` 或 `"card"`）
 - `game_path`：游戏目录路径
 - `mod_notes`：Mod 备注名称
 - `mod_images`：Mod 预览图路径（Mod 文件夹内的图片存相对路径，外部图片存绝对路径）
@@ -192,7 +199,7 @@ locales/
 `mod_manager.py` → `console_setup.py` + `i18n.py`（启动阶段）  
 `mod_manager.py` → `gui.py` → `config.py` + `mod_ops.py`
 
-详细文档见 [modules/modules.md](modules/modules.md)。
+详细文档见 [中文模块文档](modules/modules.md) / [English Modules Documentation](modules/modules_EN.md)。
 
 ## 技术栈
 

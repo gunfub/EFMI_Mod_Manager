@@ -5,6 +5,8 @@ EFMI Mod Manager - GUI 主界面模块
 """
 
 import os
+import math
+import re
 import sys
 import threading
 from tkinter import messagebox, filedialog
@@ -14,7 +16,7 @@ from customtkinter import CTkImage
 
 # PIL 用于预览图片
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
 
     HAS_PIL = True
 except ImportError:
@@ -34,7 +36,9 @@ from modules.i18n import t, get_i18n
 
 
 class ModManagerApp:
-    PREVIEW_SIZE = 48
+    PREVIEW_SIZE = (85, 48)
+    CARD_WIDTH = 256
+    CARD_GAP = 4
 
     LANG_NATIVE = {
         "zh": "中文",
@@ -86,12 +90,19 @@ class ModManagerApp:
 
         # 工具栏可翻译控件引用
         self._toolbar_widgets = {}
+        self._view_mode = ConfigManager.get_view_mode()
+        self._view_mode_var = None
+        self._card_columns = None
+        self._card_resize_job = None
+        self._card_area_width = 0
+        self._card_watch_job = None
 
         # 动态 DPI 缩放
         self._dpi_scale = self._get_dpi_scale_factor()
 
         self._build_ui()
-        self._load_config_and_refresh()
+        self._card_watch_job = self.root.after(150, self._watch_card_area)
+        self._load_config_and_refresh(defer=True)
 
     # ============================================================
     # DPI 动态缩放
@@ -277,6 +288,18 @@ class ModManagerApp:
         w_manage_groups.pack(side="left", padx=2)
         self._toolbar_widgets["manage_groups"] = w_manage_groups
 
+        self._view_mode_var = ctk.StringVar(value=self._view_mode)
+        self._view_switch = ctk.CTkSegmentedButton(
+            toolbar,
+            values=["list", "card"],
+            variable=self._view_mode_var,
+            command=self._on_view_mode_change,
+            width=132, height=28,
+            font=self._font(10),
+        )
+        self._view_switch.pack(side="right", padx=(6, 14), pady=7)
+        self._update_view_switch_labels()
+
         # ---- 主体区域 ----
         body = ctk.CTkFrame(self.root, fg_color=("gray95", "gray14"))
         body.pack(fill="both", expand=True, padx=0, pady=0)
@@ -380,11 +403,78 @@ class ModManagerApp:
         tw["batch_disable"].configure(text=t("toolbar.batch_disable", "批量禁用"))
         tw["new_group"].configure(text=t("toolbar.new_group", "➕ 新建分组"))
         tw["manage_groups"].configure(text=t("toolbar.manage_groups", "✏️ 管理分组"))
+        self._update_view_switch_labels()
 
         self._lang_var.set(self._lang_menu_display())
         self._lang_menu.configure(values=self._lang_menu_values())
 
         self._refresh()
+
+    def _view_mode_labels(self):
+        return {
+            "list": t("toolbar.view_list", "☷ 列表"),
+            "card": t("toolbar.view_card", "▦ 卡片"),
+        }
+
+    def _update_view_switch_labels(self):
+        labels = self._view_mode_labels()
+        self._view_switch.configure(values=[labels["list"], labels["card"]])
+        self._view_mode_var.set(labels[self._view_mode])
+
+    def _on_view_mode_change(self, selected_label):
+        labels = self._view_mode_labels()
+        mode = "card" if selected_label == labels["card"] else "list"
+        if mode == self._view_mode:
+            return
+        self._view_mode = mode
+        if mode != "card" and self._card_resize_job is not None:
+            self.root.after_cancel(self._card_resize_job)
+            self._card_resize_job = None
+        ConfigManager.set_view_mode(mode)
+        self._render_mod_list()
+
+    def _get_card_column_count(self, measured_width=None):
+        if measured_width is None:
+            measured_width = (
+                self._card_area_width or self.scroll_frame.winfo_width()
+            )
+        available_width = max(
+            self.CARD_WIDTH,
+            (measured_width - 34) / self._dpi_scale,
+        )
+        return max(
+            1,
+            int((available_width + self.CARD_GAP) //
+                (self.CARD_WIDTH + self.CARD_GAP)),
+        )
+
+    def _watch_card_area(self):
+        self._card_watch_job = None
+        if self.root.winfo_exists():
+            self.root.update_idletasks()
+            self._card_area_width = self.scroll_frame._parent_canvas.winfo_width()
+            if self._view_mode == "card" and self.mods_data:
+                columns = self._get_card_column_count(self._card_area_width)
+                if columns != self._card_columns:
+                    self._refresh_card_columns()
+            self._card_watch_job = self.root.after(150, self._watch_card_area)
+
+    def _refresh_card_columns(self):
+        self._card_resize_job = None
+        if self._view_mode != "card":
+            return
+        columns = self._get_card_column_count()
+        if columns == self._card_columns:
+            return
+
+        selected_names = {
+            name for name, var in self._checkbox_vars.items() if var.get()
+        }
+        self._render_mod_list()
+        for name in selected_names:
+            if name in self._checkbox_vars:
+                self._checkbox_vars[name].set(True)
+        self._sync_all_group_checkboxes()
 
     # ---- 中文拼音索引支持 ----
     @staticmethod
@@ -448,6 +538,63 @@ class ModManagerApp:
                         pass
                 return '#'
         return '#'
+
+    @staticmethod
+    def _fit_card_text(text, font, max_width):
+        """按自然断点换行，并将卡片文字限制为最多两行。"""
+        if not text:
+            return ""
+
+        # 英文单词、版本号和带连接符的名称尽量保持完整；中文等字符可逐字换行。
+        tokens = re.findall(
+            r"\s+|[A-Za-z0-9]+(?:[._'-][A-Za-z0-9]+)*|.",
+            text,
+        )
+        lines = []
+        current = ""
+        truncated = False
+
+        while tokens and len(lines) < 2:
+            token = tokens.pop(0)
+            candidate = current + token
+            if font.measure(candidate.rstrip()) <= max_width:
+                current = candidate
+                continue
+
+            if current.strip():
+                lines.append(current.rstrip())
+                current = ""
+                if len(lines) == 2:
+                    truncated = True
+                    break
+                token = token.lstrip()
+                if token:
+                    tokens.insert(0, token)
+                continue
+
+            # 单个连续名称本身超过一行时，只能在字符中间断开。
+            fitted = ""
+            for index, char in enumerate(token):
+                if fitted and font.measure(fitted + char) > max_width:
+                    lines.append(fitted)
+                    remainder = token[index:]
+                    if remainder:
+                        tokens.insert(0, remainder)
+                    break
+                fitted += char
+            else:
+                current = fitted
+
+        if len(lines) < 2 and current:
+            lines.append(current.rstrip())
+
+        if (tokens or truncated) and lines:
+            last = lines[-1].rstrip()
+            while last and font.measure(last + "...") > max_width:
+                last = last[:-1].rstrip()
+            lines[-1] = last + "..."
+
+        return "\n".join(lines[:2])
 
     def _rebuild_alphabet_bar(self):
         """重建一级 A-Z 索引：分组名首字母（全局右侧栏）"""
@@ -620,12 +767,25 @@ class ModManagerApp:
             ConfigManager.set_game_path(path)
             self._load_config_and_refresh()
 
-    def _load_config_and_refresh(self):
+    def _load_config_and_refresh(self, defer=False):
         game_path = ConfigManager.get_game_path()
         if game_path:
             self.path_label.configure(text=os.path.basename(game_path) or game_path)
         else:
             self.path_label.configure(text=t("top.no_folder", "未选择文件夹"))
+        if defer:
+            # Windows 完成顶层窗口映射后，滚动区才具有可用于计算卡片列数的实际宽度。
+            self.root.after(10, self._refresh_when_layout_ready)
+        else:
+            self._refresh()
+
+    def _refresh_when_layout_ready(self, attempt=0):
+        self.root.update_idletasks()
+        if self.scroll_frame.winfo_width() < 500 and attempt < 50:
+            self.root.after(
+                10, lambda: self._refresh_when_layout_ready(attempt + 1),
+            )
+            return
         self._refresh()
 
     def _refresh(self):
@@ -694,6 +854,8 @@ class ModManagerApp:
         self._mod_rows.clear()
         self._preview_ctk_images.clear()
         self._group_mini_alpha_bars.clear()
+        if self._view_mode != "card":
+            self._card_columns = None
 
         if not self.mods_data:
             ctk.CTkLabel(
@@ -801,14 +963,41 @@ class ModManagerApp:
         if mods:
             self._group_first_mod[gname] = mods[0]["name"]
 
-        # 左栏：Mod 行
+        # 左栏：Mod 行或卡片网格
         left_frame = ctk.CTkFrame(content, fg_color=("gray95", "gray14"))
         left_frame.pack(side="left", fill="both", expand=True)
 
-        for mod in mods:
+        if self._view_mode == "card":
+            self.root.update_idletasks()
+            columns = self._get_card_column_count()
+            self._card_columns = columns
+            card_width = round(self.CARD_WIDTH * self._dpi_scale)
+            card_grid = ctk.CTkFrame(
+                left_frame,
+                width=columns * (self.CARD_WIDTH + self.CARD_GAP),
+                fg_color="transparent",
+            )
+            card_grid.pack(anchor="n")
+            card_pixel_width = round(self.CARD_WIDTH * self._dpi_scale)
+            card_pixel_padding = math.ceil(
+                (self.CARD_GAP // 2) * self._dpi_scale,
+            )
+            slot_width = card_pixel_width + card_pixel_padding * 2
+            for column in range(columns):
+                card_grid.grid_columnconfigure(column, minsize=slot_width)
+        else:
+            card_grid = left_frame
+
+        for index, mod in enumerate(mods):
             self._mod_to_group[mod["name"]] = gname
-            self._create_mod_row(left_frame, mod, notes.get(mod["name"], ""),
-                                 images.get(mod["name"], ""))
+            if self._view_mode == "card":
+                self._create_mod_card(
+                    card_grid, mod, notes.get(mod["name"], ""),
+                    images.get(mod["name"], ""), index, columns, card_width,
+                )
+            else:
+                self._create_mod_row(left_frame, mod, notes.get(mod["name"], ""),
+                                     images.get(mod["name"], ""))
 
         # 右栏：该组的迷你 A-Z 索引
         self._build_group_mini_alpha_bar(content, gname, mods, notes)
@@ -900,12 +1089,17 @@ class ModManagerApp:
 
         # ---- 预览图 ----
         resolved_img = self._resolve_preview_path(mod["path"], image_path)
+        preview_created = False
         if resolved_img and HAS_PIL:
             try:
-                img = Image.open(resolved_img)
-                img.thumbnail((self.PREVIEW_SIZE, self.PREVIEW_SIZE), Image.LANCZOS)
+                with Image.open(resolved_img) as source_img:
+                    img = ImageOps.fit(
+                        source_img,
+                        self.PREVIEW_SIZE,
+                        method=Image.LANCZOS,
+                    )
                 ctk_img = CTkImage(light_image=img, dark_image=img,
-                                   size=(self.PREVIEW_SIZE, self.PREVIEW_SIZE))
+                                   size=self.PREVIEW_SIZE)
                 self._preview_ctk_images[name] = ctk_img
                 preview_label = ctk.CTkLabel(row, image=ctk_img, text="",
                                               cursor="hand2")
@@ -916,8 +1110,21 @@ class ModManagerApp:
                     child.bind("<Button-1>",
                                lambda e, p=resolved_img: self._show_full_image(p))
                 preview_label._image_path = resolved_img
+                preview_created = True
             except Exception:
                 pass
+
+        if not preview_created:
+            preview_label = ctk.CTkLabel(
+                row,
+                text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
+                width=self.PREVIEW_SIZE[0], height=self.PREVIEW_SIZE[1],
+                font=self._font(7),
+                text_color=("gray48", "gray55"),
+                fg_color=("gray84", "gray19"),
+                corner_radius=4,
+            )
+            preview_label.pack(side="left", padx=(0, 6))
 
         # ---- 名称区域 ----
         name_frame = ctk.CTkFrame(row, fg_color=("gray95", "gray13"))
@@ -1006,6 +1213,202 @@ class ModManagerApp:
 
         self._mod_rows[name] = {
             "row_frame": row,
+            "switch": switch,
+            "switch_var": switch_var,
+            "status_label": status_label,
+            "checkbox_var": var,
+            "name_label": name_label,
+            "original_name_label": original_name_label,
+            "mod": mod,
+        }
+
+    def _create_mod_card(self, parent, mod, note, image_path, index, columns, card_width):
+        name = mod["name"]
+        enabled = mod["enabled"]
+        image_width = max(210, card_width - 16)
+        image_size = (image_width, max(118, round(image_width * 9 / 16)))
+        preview_height = max(94, round(image_size[1] / self._dpi_scale))
+        display_image_size = (
+            max(168, round(image_size[0] / self._dpi_scale)),
+            preview_height,
+        )
+
+        display_name = note if note else name
+        title_font = self._font(12, weight="bold")
+        title_text_width = max(
+            80, round((image_width - 50) / self._dpi_scale) - 4,
+        )
+        fitted_title = self._fit_card_text(
+            display_name, title_font, title_text_width,
+        )
+        title_height = 40 if "\n" in fitted_title else 22
+
+        original_name_font = None
+        fitted_original_name = ""
+        original_height = 0
+        if note:
+            original_name_font = self._font(9)
+            original_text_width = max(
+                80, round((image_width - 44) / self._dpi_scale) - 4,
+            )
+            fitted_original_name = self._fit_card_text(
+                name, original_name_font, original_text_width,
+            )
+            original_height = 32 if "\n" in fitted_original_name else 18
+
+        card = ctk.CTkFrame(
+            parent, width=self.CARD_WIDTH, corner_radius=8,
+            fg_color=("gray92", "gray13"),
+            border_width=1, border_color=("gray78", "gray23"),
+        )
+        card.grid(
+            row=index // columns, column=index % columns,
+            padx=self.CARD_GAP // 2, pady=4,
+        )
+        card.grid_propagate(False)
+
+        resolved_img = self._resolve_preview_path(mod["path"], image_path)
+        preview = None
+        if resolved_img and HAS_PIL:
+            try:
+                with Image.open(resolved_img) as source_img:
+                    img = ImageOps.fit(source_img, image_size, method=Image.LANCZOS)
+                ctk_img = CTkImage(
+                    light_image=img, dark_image=img, size=display_image_size,
+                )
+                self._preview_ctk_images[name] = ctk_img
+                preview = ctk.CTkLabel(
+                    card, image=ctk_img, text="", height=preview_height,
+                    corner_radius=7, cursor="hand2",
+                )
+                preview.bind("<Button-1>", lambda e, p=resolved_img: self._show_full_image(p))
+            except Exception:
+                preview = None
+
+        if preview is None:
+            preview = ctk.CTkLabel(
+                card,
+                text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
+                width=display_image_size[0], height=preview_height,
+                font=self._font(11), text_color=("gray48", "gray55"),
+                fg_color=("gray84", "gray19"), corner_radius=7,
+            )
+        preview.pack(fill="x", padx=6, pady=(6, 0))
+
+        info = ctk.CTkFrame(card, fg_color="transparent")
+        info.pack(fill="both", expand=True, padx=10, pady=(8, 8))
+
+        title_row = ctk.CTkFrame(info, fg_color="transparent")
+        title_row.pack(fill="x")
+        var = ctk.BooleanVar(value=False)
+        self._checkbox_vars[name] = var
+        cb = ctk.CTkCheckBox(
+            title_row, text="", width=18,
+            checkbox_width=18, checkbox_height=18,
+            variable=var, onvalue=True, offvalue=False,
+            command=lambda n=name: self._on_mod_checkbox_toggle(n),
+        )
+        cb.pack(side="left", padx=(0, 6))
+
+        title_container = ctk.CTkFrame(
+            title_row, width=1,
+            height=title_height,
+            fg_color="transparent",
+        )
+        title_container.pack(side="left", fill="x", expand=True)
+        title_container.pack_propagate(False)
+        name_label = ctk.CTkLabel(
+            title_container, text=fitted_title,
+            font=title_font, anchor="w", justify="left",
+        )
+        name_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        original_name_label = None
+        if note:
+            original_container = ctk.CTkFrame(
+                info, width=1,
+                height=original_height,
+                fg_color="transparent",
+            )
+            original_container.pack(fill="x", padx=(24, 0), pady=(0, 2))
+            original_container.pack_propagate(False)
+            original_name_label = ctk.CTkLabel(
+                original_container, text=fitted_original_name,
+                font=original_name_font,
+                text_color="gray", anchor="w", justify="left",
+            )
+            original_name_label.place(x=0, y=0, relwidth=1, relheight=1)
+
+        controls = ctk.CTkFrame(info, fg_color="transparent")
+        controls.pack(fill="x", pady=(6, 0))
+
+        switch_var = ctk.BooleanVar(value=enabled)
+        switch = ctk.CTkSwitch(
+            controls, text="", variable=switch_var,
+            onvalue=True, offvalue=False, width=42,
+            switch_width=38, switch_height=20,
+            command=lambda n=name, sv=switch_var: self._on_switch_toggled(n, sv.get()),
+        )
+        switch.pack(side="left")
+        status_label = ctk.CTkLabel(
+            controls,
+            text=t("mod_list.status_enabled", "启用") if enabled else t("mod_list.status_disabled", "禁用"),
+            font=self._font(9), text_color="#3fb950" if enabled else "gray",
+        )
+        status_label.pack(side="left", padx=(0, 4))
+
+        more_btn = ctk.CTkButton(
+            controls, text="⋯", width=28, height=28,
+            font=self._font(14, weight="bold"),
+            fg_color="transparent", hover_color=("gray82", "gray25"),
+            text_color=("gray40", "gray70"),
+            command=lambda m=mod: self._show_more_menu(m),
+        )
+        more_btn.pack(side="right", padx=(2, 0))
+        open_btn = ctk.CTkButton(
+            controls, text="📂", width=28, height=28,
+            font=self._font(12), fg_color="transparent",
+            hover_color=("gray82", "gray25"),
+            text_color=("gray40", "gray70"),
+            command=lambda m=mod: self._open_mod_folder(m),
+        )
+        open_btn.pack(side="right", padx=2)
+
+        readme_files = self.mod_manager.check_readme_files(name, enabled) if self.mod_manager else []
+        if readme_files:
+            readme_count = len(readme_files)
+            rf_name, rf_path = readme_files[0]
+            button_text = (
+                README_LABELS.get(rf_name, f"📄 {rf_name}")
+                if readme_count == 1
+                else f"📄 README x{readme_count}"
+            )
+            readme_btn = ctk.CTkButton(
+                controls, text=button_text,
+                width=72, height=24, font=self._font(8),
+                fg_color=("gray80", "gray25"),
+                hover_color=("gray70", "gray35"),
+                text_color=("gray25", "gray85"),
+            )
+            if readme_count == 1:
+                readme_btn.configure(
+                    command=lambda p=rf_path: self.mod_manager.open_file(p),
+                )
+            else:
+                readme_btn.configure(
+                    command=lambda b=readme_btn, files=tuple(readme_files):
+                    self._show_readme_menu(b, files),
+                )
+            readme_btn.pack(side="right", padx=2)
+
+        # 子控件先计算自然高度，再锁定卡片宽度，避免图片或长文字撑宽网格。
+        card.update_idletasks()
+        natural_height = max(1, round(card.winfo_reqheight() / self._dpi_scale))
+        card.configure(width=self.CARD_WIDTH, height=natural_height)
+        card.pack_propagate(False)
+
+        self._mod_rows[name] = {
+            "row_frame": card,
             "switch": switch,
             "switch_var": switch_var,
             "status_label": status_label,
@@ -1329,6 +1732,30 @@ class ModManagerApp:
     # ============================================================
     # 更多菜单
     # ============================================================
+    def _show_readme_menu(self, button, readme_files):
+        import tkinter as tk
+
+        menu = tk.Menu(
+            self.root, tearoff=0,
+            bg="#2b2b2b", fg="#e0e0e0",
+            activebackground="#3B8ED0", activeforeground="white",
+            font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))),
+            bd=1, relief="flat",
+        )
+        for file_name, file_path in readme_files:
+            menu.add_command(
+                label=file_name,
+                command=lambda p=file_path: self.mod_manager.open_file(p),
+            )
+
+        try:
+            menu.tk_popup(
+                button.winfo_rootx(),
+                button.winfo_rooty() + button.winfo_height(),
+            )
+        finally:
+            menu.grab_release()
+
     def _show_more_menu(self, mod):
         name = mod["name"]
         import tkinter as tk

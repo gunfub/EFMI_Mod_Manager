@@ -17,7 +17,9 @@
     "batch_enable": "一括有効化",
     "batch_disable": "一括無効化",
     "new_group": "➕ 新規グループ",
-    "manage_groups": "✏️ グループ管理"
+    "manage_groups": "✏️ グループ管理",
+    "view_list": "☷ リスト",
+    "view_card": "▦ カード"
   },
   "mod_list": {
     "empty": "Mod フォルダが見つかりません",
@@ -27,7 +29,8 @@
     "arrow_expanded": "▼",
     "count_suffix": " {count} 個",
     "status_enabled": "有効",
-    "status_disabled": "無効"
+    "status_disabled": "無効",
+    "no_preview": "プレビューなし"
   },
   "group_dialog": {
     "title_create": "新規グループ",
