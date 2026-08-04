@@ -247,6 +247,60 @@ Detects the system language, loads JSON translations, supports runtime switching
 
 ---
 
+## modules/gamebanana.py - GameBanana API Client
+
+### Responsibility
+
+Wraps the GameBanana API v11: online browsing, search, category filtering, details, and secure downloads.
+
+### Main Interface
+
+| Method | Description |
+|--------|-------------|
+| `browse(page, per_page, sort, query, category, model, force)` | Browse/search listings; `category` accepts a `RemoteCategory` or a `(model, category_id)` tuple, mapped to `_aFilters[Generic_Category]` and the request path (`/apiv11/{model}/Index` or `Util/Search/Results`) |
+| `categories(model, game_id, force)` | Root categories: `GET /apiv11/{model}/Categories?_idGameRow=...&_sSort=count`; obsolete categories are skipped |
+| `subcategories(model, category_id, force)` | Subcategories: `GET /apiv11/{model}Category/{id}/SubCategories`; records lack `_idRow`, so the ID is parsed from the last `_sUrl` segment |
+| `details(mod_id, model, force)` | Details: `GET /apiv11/{model}/{id}/ProfilePage`; Tool/Sound profiles are compatible with Mod |
+
+### Data Classes
+
+- `RemoteCategory`: `model`, `category_id`, `name`, `item_count`, `icon_url`, `has_children`
+- `RemoteMod`: includes a `model` field (from `_sModelName`) that selects the details endpoint
+
+### Notes
+
+- Category endpoints return a single dict instead of an array for one-record results; the client normalizes this
+- The filter key is `Generic_Category` (`Mod_Category` returns UNKNOWN_FILTER)
+
+---
+
+## modules/gb_category_i18n.py - Category Name Translations (Manual Hot Updates)
+
+### Responsibility
+
+Independent translation layer for GameBanana category names: bundled fallback plus manual GitHub hot updates, separate from the UI i18n system.
+
+### Files and Constants
+
+- Bundled: `locales/category_translations/gb_category_names.json` (ships with the app; path matches the GitHub repository)
+- Cache: `data/cache/gb_category_names.json` (last successful update; takes priority over the bundled file)
+- Default URL: `https://raw.githubusercontent.com/gunfub/EFMI_Mod_Manager/main/locales/category_translations/gb_category_names.json` (overridable via `ConfigManager.get/set_gb_category_i18n_url`)
+- Format: `{"category_id": {"zh": "translation", ...}}`; `en` is optional
+
+### Class: `GBCategoryI18n`
+
+| Method | Description |
+|--------|-------------|
+| `load()` | Reads local translations (cache -> bundled -> empty) at startup; never touches the network |
+| `refresh(client)` | Manually fetches the latest translations; host whitelist, 1 MiB size cap, JSON structure validation, atomic cache write; returns an error string instead of raising |
+| `translate(category_id, name, lang)` | Returns the translation or falls back to the English original |
+
+### Called By
+
+- `modules/online_browser.py` (the "Update category translations" button calls `refresh()`; network access happens only on button click)
+
+---
+
 ## modules/gui.py - Main GUI
 
 ### Responsibility
@@ -279,6 +333,9 @@ Implements the complete `customtkinter` interface: toolbar, list/card views, gro
 | `_load_config_and_refresh(defer=False)` | Loads the path and optionally defers the initial scan |
 | `_refresh_when_layout_ready(attempt=0)` | Waits for a reliable scroll-area width before the first card render |
 | `_refresh()` | Validates, scans, cleans metadata, renders Mods, updates stats, and rebuilds navigation |
+| `_update_browse_btn_visibility()` | Shows the top-bar Browse button only until a folder is selected; hides it afterwards (the Settings menu entry stays available) |
+| `_show_settings_menu(anchor=None)` | Top-bar Settings popup: Language submenu (current language checkmarked) and Browse Folder |
+| `_show_mod_settings_menu(anchor=None)` | Top-bar More Mod Settings popup: Restore Backup and Check GameBanana Mod Updates |
 
 The deferred startup avoids calculating card columns while Tk still reports the temporary startup width.
 
@@ -286,7 +343,7 @@ The deferred startup avoids calculating card columns while Tk still reports the 
 
 | Method | Description |
 |--------|-------------|
-| `_build_ui()` | Builds the top bar, toolbar, scroll area, alphabet bar, status bar, and progress widgets |
+| `_build_ui()` | Builds a classic Win32-style menu bar pinned to the very top of the window (Settings / More Mod Settings, left-aligned, with a divider line beneath), the title bar (title, page buttons, path label, conditional Browse button), the toolbar (select/actions/groups + Install ZIP/Refresh/view mode), scroll area, alphabet bar, status bar, and progress widgets |
 | `_build_alphabet_bar(parent)` | Builds the global group index container |
 | `_rebuild_alphabet_bar()` | Creates group-initial buttons and the ungrouped shortcut |
 | `_build_group_mini_alpha_bar(content, group, mods, notes)` | Builds the per-group Mod initial index |

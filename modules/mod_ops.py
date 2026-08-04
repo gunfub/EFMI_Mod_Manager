@@ -21,6 +21,26 @@ def _open_in_os(path):
         subprocess.Popen(["xdg-open", path])
 
 
+def find_readme_files(mod_path):
+    """Find supported README files with one directory enumeration."""
+    try:
+        with os.scandir(mod_path) as iterator:
+            files = {
+                (entry.name.lower() if os.name == "nt" else entry.name): entry.name
+                for entry in iterator if entry.is_file()
+            }
+    except OSError:
+        return []
+
+    results = []
+    for expected_name in README_NAMES:
+        lookup = expected_name.lower() if os.name == "nt" else expected_name
+        actual_name = files.get(lookup)
+        if actual_name is not None:
+            results.append((expected_name, os.path.join(mod_path, actual_name)))
+    return results
+
+
 class ModManager:
     def __init__(self, game_path):
         self.game_path = game_path
@@ -48,26 +68,27 @@ class ModManager:
     def scan_mods(self):
         mods = []
         if os.path.isdir(self.mods_dir):
-            for name in sorted(os.listdir(self.mods_dir)):
-                full = os.path.join(self.mods_dir, name)
-                if os.path.isdir(full):
-                    mods.append({"name": name, "enabled": True, "path": full})
+            with os.scandir(self.mods_dir) as iterator:
+                entries = sorted(
+                    (entry for entry in iterator if entry.is_dir()),
+                    key=lambda entry: entry.name)
+            for entry in entries:
+                mods.append({"name": entry.name, "enabled": True,
+                             "path": entry.path})
         if os.path.isdir(self.disabled_dir):
-            for name in sorted(os.listdir(self.disabled_dir)):
-                full = os.path.join(self.disabled_dir, name)
-                if os.path.isdir(full):
-                    mods.append({"name": name, "enabled": False, "path": full})
+            with os.scandir(self.disabled_dir) as iterator:
+                entries = sorted(
+                    (entry for entry in iterator if entry.is_dir()),
+                    key=lambda entry: entry.name)
+            for entry in entries:
+                mods.append({"name": entry.name, "enabled": False,
+                             "path": entry.path})
         return mods
 
     def check_readme_files(self, mod_name, enabled):
         base = self.mods_dir if enabled else self.disabled_dir
         mod_path = os.path.join(base, mod_name)
-        results = []
-        for fname in README_NAMES:
-            fpath = os.path.join(mod_path, fname)
-            if os.path.isfile(fpath):
-                results.append((fname, fpath))
-        return results
+        return find_readme_files(mod_path)
 
     def open_file(self, filepath):
         if os.path.isfile(filepath):

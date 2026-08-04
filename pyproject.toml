@@ -5,6 +5,7 @@ description = "EFMI Mod Manager - Windows PC Mod 管理器，通过移动文件�
 requires-python = ">=3.8"
 dependencies = [
     "customtkinter>=5.2.0",
+    "httpx>=0.28.1",
     "Pillow>=9.0.0",
     "pypinyin>=0.50.0",
 ]
@@ -13,6 +14,7 @@ dependencies = [
 dev = [
     "pip>=24.0",
     "pyinstaller>=6.0",
+    "pytest>=8.3.5",
 ]
 
 [tool.pyinstaller]

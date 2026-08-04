@@ -7,6 +7,9 @@
     "refresh": "🔄 更新",
     "browse": "📁 フォルダ選択",
     "no_folder": "フォルダが選択されていません"
+    ,"local_page": "インストール済み Mod",
+    "online_page": "オンライン参照",
+    "check_updates": "更新を確認"
   },
   "toolbar": {
     "select": "選択:",
@@ -19,7 +22,10 @@
     "new_group": "➕ 新規グループ",
     "manage_groups": "✏️ グループ管理",
     "view_list": "☷ リスト",
-    "view_card": "▦ カード"
+    "view_compact": "☷ コンパクト",
+    "view_card": "▦ カード",
+    "view_detailed": "☰ 詳細",
+    "install_zip": "ZIP インストール"
   },
   "mod_list": {
     "empty": "Mod フォルダが見つかりません",
@@ -122,5 +128,38 @@
   "toggle": {
     "src_not_found": "Mod フォルダが見つかりません: {path}",
     "dst_exists": "同じ名前の Mod が既に移動先に存在します: {path}"
+  },
+  "zip_install": {
+    "app_dir_readonly": "アプリケーションフォルダに書き込めません。ポータブル版を書き込み可能なフォルダへ移動してください。\n\n{error}",
+    "choose_title": "インストールする ZIP Mod を選択",
+    "zip_files": "ZIP アーカイブ",
+    "all_files": "すべてのファイル",
+    "inspecting": "ZIP を安全確認しています...",
+    "inspect_failed_title": "ZIP の確認に失敗しました",
+    "confirm_title": "ZIP インストールの確認",
+    "summary": "{archive}\n候補 {candidates} 個、{files} ファイル、展開後約 {size}",
+    "hint": "候補とフォルダ名を確認してください。同名の場合は両方を保持する名前に変更されています。",
+    "candidate_info": "{files} ファイル / {size}",
+    "target_enabled": "有効 (Mods)",
+    "target_disabled": "無効 (Disabled_Mods)",
+    "target_label": "インストール後:",
+    "invalid_name_title": "無効なフォルダ名",
+    "name_conflict_title": "名前の競合",
+    "name_conflict": "複数の候補に同じ名前は使用できません: {name}",
+    "existing_conflict": "同名フォルダが既に存在します: {name}",
+    "select_candidate": "候補を1つ以上選択してください",
+    "install_button": "インストール",
+    "installing": "ZIP をインストールしています...",
+    "cancel_install": "キャンセル",
+    "cancelling": "キャンセルして一時ファイルを削除しています...",
+    "closing": "インストールを終了して一時ファイルを削除しています...",
+    "install_progress": "{name} をインストール中... ({current}/{total} ファイル)",
+    "failed_title": "ZIP インストール失敗",
+    "result_title": "ZIP インストール結果",
+    "partial_result": "成功 {success} 件、失敗 {failed} 件。\n\n{details}",
+    "success_status": "{count} 個の Mod をインストールしました: {names}"
+  },
+  "online": {
+    "search_placeholder": "GameBanana Mod を検索...", "search": "検索", "popular": "人気", "recent": "最近更新", "refresh": "更新", "category": "カテゴリ", "all": "すべて", "loading_categories": "カテゴリを読み込み中...", "select_this_category": "「{name}」を選択", "no_subcategories": "（サブカテゴリなし）", "load_failed": "（読み込み失敗）", "categories_error": "カテゴリの読み込みに失敗: {error}", "categories_empty": "カテゴリがありません", "section_mods": "Mods", "section_tools": "ツール", "section_sounds": "サウンド", "update_category_labels": "カテゴリ翻訳を更新", "updating_category_labels": "カテゴリ翻訳を更新中...", "category_labels_updated": "カテゴリ翻訳を更新しました", "category_labels_failed": "カテゴリ翻訳の更新に失敗: {error}", "ready": "GameBanana を検索または参照", "loading": "GameBanana を読み込み中...", "loading_details": "Mod 詳細を読み込み中...", "error": "オンライン読み込み失敗: {error}", "result_count": "{shown} / {total} 件を表示", "more": "さらに読み込む", "preview": "プレビュー", "sensitive_prefix": "[注意] ", "hide_sensitive": "注意が必要な内容を隠す", "unknown_author": "不明な作者", "details": "詳細", "author": "作者: {name}", "no_description": "説明なし", "unavailable": "この Mod はインストールできません: {reason}", "archived": "アーカイブ済みファイル", "open_page": "元ページをブラウザで開く", "install": "インストール", "install_confirm_title": "オンラインインストールの確認", "install_confirm": "{name} をダウンロードしてインストールしますか？\n\nファイル: {file}\nサイズ: {size}", "downloading": "GameBanana ファイルをダウンロード中...", "download_failed": "オンラインダウンロード失敗", "no_managed_mods": "更新を確認できる GameBanana Mod がありません", "checking_updates": "Mod の更新を確認中...", "update_result_title": "更新確認結果", "update_result": "{total} 個の Mod を確認しました。\n\n{details}", "update_status": "更新確認完了: {count} 件利用可能", "update_choose_hint": "更新候補を選択してください。置換前に現在の Mod をバックアップし、失敗時は復元します。", "update_path_missing": "管理対象の Mod フォルダが存在しないため更新できません。", "update_requires_single_candidate": "更新には Mod 候補を1つ指定する必要があります", "update_multiple_candidates": "この ZIP には複数の候補があります。通常のインストールで対象を選択してください。", "update_confirm_title": "更新の確認", "update_confirm": "{name} をバックアップして置換しますか？", "updating": "Mod をバックアップして置換中...", "update_progress": "更新を準備中... ({current}/{total})", "update_success": "更新完了。以前のバージョンをバックアップしました。\n\nバックアップ: {path}", "update_failed": "更新失敗", "sensitive_title": "注意が必要なコンテンツ", "sensitive_confirm": "この Mod には注意が必要な内容が含まれる可能性があります。詳細を表示しますか？"
   }
 }

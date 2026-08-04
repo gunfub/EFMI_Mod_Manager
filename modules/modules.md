@@ -362,6 +362,60 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 ---
 
+## modules/gamebanana.py — GameBanana API 客户端
+
+### 职责
+
+封装 GameBanana API v11：在线浏览、搜索、分类筛选、详情与安全下载。
+
+### 主要接口
+
+| 方法 | 说明 |
+|------|------|
+| `browse(page, per_page, sort, query, category, model, force)` | 浏览/搜索列表；`category` 接受 `RemoteCategory` 或 `(model, category_id)`，分类与模型会分别写入 `_aFilters[Generic_Category]` 与请求路径（`/apiv11/{model}/Index` 或 `Util/Search/Results`） |
+| `categories(model, game_id, force)` | 根分类列表：`GET /apiv11/{model}/Categories?_idGameRow=...&_sSort=count`；跳过 obsolete |
+| `subcategories(model, category_id, force)` | 子分类：`GET /apiv11/{model}Category/{id}/SubCategories`；记录无 `_idRow`，ID 从 `_sUrl` 末段解析 |
+| `details(mod_id, model, force)` | 详情：`GET /apiv11/{model}/{id}/ProfilePage`，Tool/Sound 与 Mod 结构兼容 |
+
+### 数据类
+
+- `RemoteCategory`：`model`、`category_id`、`name`、`item_count`、`icon_url`、`has_children`
+- `RemoteMod`：含 `model` 字段（来自 `_sModelName`），详情请求据此选择端点
+
+### 注意
+
+- 分类接口单条记录时返回 dict 而非数组，内部统一归一化
+- 过滤参数名是 `Generic_Category`（`Mod_Category` 会报 UNKNOWN_FILTER）
+
+---
+
+## modules/gb_category_i18n.py — 分类名翻译（手动热更新）
+
+### 职责
+
+GameBanana 分类名的独立翻译层：内置文件兜底 + GitHub 手动热更新，与界面 i18n 分离。
+
+### 文件与常量
+
+- 内置：`locales/category_translations/gb_category_names.json`（随包分发，与 GitHub 仓库路径一致）
+- 缓存：`data/cache/gb_category_names.json`（上次成功更新的副本，优先级高于内置）
+- 默认 URL：`https://raw.githubusercontent.com/gunfub/EFMI_Mod_Manager/main/locales/category_translations/gb_category_names.json`（可用 `ConfigManager.get/set_gb_category_i18n_url` 覆盖）
+- 格式：`{"分类ID": {"zh": "译文", ...}}`；en 可省略
+
+### 类：`GBCategoryI18n`
+
+| 方法 | 说明 |
+|------|------|
+| `load()` | 读取本地翻译（缓存 → 内置 → 空），初始化时调用，不联网 |
+| `refresh(client)` | 手动拉取 GitHub 最新翻译；白名单 host、1 MiB 大小上限、JSON 结构校验、原子写缓存；失败返回错误信息不抛异常 |
+| `translate(category_id, name, lang)` | 命中返回译文，否则回退英文原名 |
+
+### 被调用于
+
+- `modules/online_browser.py`（在线页「更新分类翻译」按钮触发 `refresh()`；仅在按钮点击时联网）
+
+---
+
 ## modules/gui.py — GUI 主界面
 
 ### 职责
@@ -400,7 +454,7 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 
 | 方法 | 说明 |
 |------|------|
-| `_build_ui()` | 构建全部 UI：顶栏（标题/路径/刷新/选择）、工具栏（选择/操作/分组）、Mod 列表可滚动区域、A-Z 侧边栏、底部状态栏、进度条 |
+| `_build_ui()` | 构建全部 UI：经典 Win32 风格菜单栏（位于窗口最顶部，设置/更多 Mod 设置左对齐，下方一条分割线）、标题栏（标题/页面切换/路径/条件显示的选择文件夹）、工具栏（选择/操作/分组 + 安装 ZIP/刷新/显示方式）、Mod 列表可滚动区域、A-Z 侧边栏、底部状态栏、进度条 |
 | `_build_alphabet_bar(parent)` | 构建一级 A-Z 跳转侧边栏占位控件（仅分组级跳转） |
 | `_rebuild_alphabet_bar()` | 重建一级 A-Z 侧边栏按钮：按分组名首字母（支持中文拼音），点击跳转到对应分组标题。底部有未分组专用按钮 |
 | `_build_group_mini_alpha_bar(content_frame, gname, mods, notes)` | 在分组内容区右侧构建该组的迷你 A-Z 二级索引栏，仅显示该组 Mod 实际存在的首字母 |
@@ -424,9 +478,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | 方法 | 说明 |
 |------|------|
 | `LANG_NATIVE` (class attr) | `dict` | 语言代码 → 原生名称 映射（`"zh"→"中文"`, `"en"→"English"`, `"ja"→"日本語"`, `"ko"→"한국어"`） |
-| `_lang_menu_display()` | 返回当前语言的菜单显示文本（如 `"中文"` / `"English"`） |
-| `_lang_menu_values()` | 从 `LANG_NATIVE` 动态生成下拉菜单选项列表 |
-| `_on_language_change(display_value)` | 语言下拉切换事件：保存到 ConfigManager → 更新 i18n → 调用 `_apply_language()` 刷新全部 UI |
+| `_lang_menu_display()` | 返回当前语言的菜单显示文本（如 `"中文"` / `"English"`），用于设置菜单语言子菜单的勾选标记 |
+| `_lang_menu_values()` | 从 `LANG_NATIVE` 动态生成语言子菜单选项列表（自动 + 各语言原生名） |
+| `_on_language_change(display_value)` | 语言子菜单切换事件：保存到 ConfigManager → 更新 i18n → 调用 `_apply_language()` 刷新全部 UI |
 | `_apply_language()` | 更新顶栏、工具栏、标题等静态 UI 文本 + 重新渲染 Mod 列表 |
 
 #### 数据流（私有方法）
@@ -434,6 +488,9 @@ PyInstaller 打包后，`customtkinter` 加载 `pkg_resources` 时发出的警�
 | 方法 | 说明 |
 |------|------|
 | `_browse_folder()` | 弹出文件夹选择对话框，设置游戏路径 |
+| `_update_browse_btn_visibility()` | 顶栏「选择文件夹」按钮仅在选择路径前显示，选中后隐藏（设置菜单内入口常驻） |
+| `_show_settings_menu(anchor=None)` | 顶栏「设置」弹出菜单：语言子菜单（勾选当前语言）、选择文件夹 |
+| `_show_mod_settings_menu(anchor=None)` | 顶栏「更多 Mod 设置」弹出菜单：恢复备份、检查 GameBanana 模组更新 |
 | `_load_config_and_refresh(defer=False)` | 加载配置；启动时可延迟刷新以等待窗口布局完成 |
 | `_refresh_when_layout_ready(attempt=0)` | 等待滚动区获得可靠宽度后执行首次刷新，避免初始卡片列数错误 |
 | `_refresh()` | 校验路径 → 扫描 Mod → 清理失效数据 → 渲染列表 → 更新统计 → 重建字母栏 |

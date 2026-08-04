@@ -7,6 +7,8 @@ EFMI Mod Manager - 配置管理模块
 import os
 import sys
 import json
+import tempfile
+import time
 
 
 # ============================================================
@@ -20,6 +22,9 @@ def get_app_dir():
 
 APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "mod_manager_config.json")
+CONFIG_SCHEMA_VERSION = 1
+VIEW_MODES = ("compact", "card", "detailed")
+VIEW_MODE_DEFAULTS = {"local": "compact", "online": "detailed"}
 
 README_NAMES = [
     "README.md",
@@ -89,14 +94,52 @@ class ConfigManager:
             try:
                 with open(CONFIG_PATH, "r", encoding="utf-8") as f:
                     return json.load(f)
-            except (json.JSONDecodeError, IOError):
-                pass
+            except json.JSONDecodeError:
+                backup_path = "{}.corrupt-{}".format(
+                    CONFIG_PATH, int(time.time()))
+                try:
+                    os.replace(CONFIG_PATH, backup_path)
+                except OSError:
+                    # Never allow a later save to overwrite unreadable user data.
+                    raise OSError(
+                        "配置文件已损坏且无法备份: {}".format(CONFIG_PATH))
+            except IOError:
+                raise
         return {}
 
     @staticmethod
     def save(config):
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+        config = dict(config)
+        config.setdefault("schema_version", CONFIG_SCHEMA_VERSION)
+        temp_path = None
+        try:
+            fd, temp_path = tempfile.mkstemp(
+                prefix=".mod-manager-config-", suffix=".tmp", dir=APP_DIR)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_PATH)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    @staticmethod
+    def ensure_app_dir_writable():
+        """Raise OSError when the portable application directory is read-only."""
+        probe_path = None
+        try:
+            fd, probe_path = tempfile.mkstemp(prefix=".efmi-write-test-", dir=APP_DIR)
+            os.close(fd)
+        finally:
+            if probe_path and os.path.exists(probe_path):
+                try:
+                    os.remove(probe_path)
+                except OSError:
+                    pass
 
     @staticmethod
     def get_game_path():
@@ -177,16 +220,63 @@ class ConfigManager:
         ConfigManager.save(config)
 
     @staticmethod
-    def get_view_mode():
-        mode = ConfigManager.load().get("view_mode", "list")
-        return mode if mode in ("list", "card") else "list"
+    def get_view_mode(source="local"):
+        if source not in VIEW_MODE_DEFAULTS:
+            raise ValueError("source must be 'local' or 'online'")
+        config = ConfigManager.load()
+        modes = config.get("view_modes")
+        if isinstance(modes, dict) and source in modes:
+            mode = modes[source]
+        elif source == "local":
+            mode = {"list": "compact", "card": "card"}.get(
+                config.get("view_mode"), VIEW_MODE_DEFAULTS[source])
+        else:
+            mode = VIEW_MODE_DEFAULTS[source]
+        return mode if mode in VIEW_MODES else VIEW_MODE_DEFAULTS[source]
 
     @staticmethod
-    def set_view_mode(mode):
-        if mode not in ("list", "card"):
-            return
+    def set_view_mode(source, mode=None):
+        # A one-argument call remains the local setter for existing callers.
+        if mode is None:
+            mode = source
+            source = "local"
+            mode = {"list": "compact", "card": "card"}.get(mode, mode)
+        if source not in VIEW_MODE_DEFAULTS:
+            raise ValueError("source must be 'local' or 'online'")
+        if mode not in VIEW_MODES:
+            return False
         config = ConfigManager.load()
-        config["view_mode"] = mode
+        modes = config.get("view_modes")
+        if not isinstance(modes, dict):
+            modes = {}
+        modes[source] = mode
+        config["view_modes"] = modes
+        ConfigManager.save(config)
+        return True
+
+    @staticmethod
+    def get_hide_sensitive_content():
+        value = ConfigManager.load().get("hide_sensitive_content", True)
+        return value if isinstance(value, bool) else True
+
+    @staticmethod
+    def set_hide_sensitive_content(hidden):
+        config = ConfigManager.load()
+        config["hide_sensitive_content"] = bool(hidden)
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_gb_category_i18n_url():
+        value = ConfigManager.load().get("gb_category_i18n_url")
+        return value if isinstance(value, str) and value.strip() else ""
+
+    @staticmethod
+    def set_gb_category_i18n_url(url):
+        config = ConfigManager.load()
+        if url and url.strip():
+            config["gb_category_i18n_url"] = url.strip()
+        else:
+            config.pop("gb_category_i18n_url", None)
         ConfigManager.save(config)
 
     @staticmethod

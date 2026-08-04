@@ -21,7 +21,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='EFMI_Mod_Manager_v1.6',
+    name='EFMI_Mod_Manager_v1.8',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +41,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='EFMI_Mod_Manager_v1.6',
+    name='EFMI_Mod_Manager_v1.8',
 )

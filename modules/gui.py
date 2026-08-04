@@ -9,6 +9,7 @@ import math
 import re
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from tkinter import messagebox, filedialog
 
 import customtkinter as ctk
@@ -16,7 +17,7 @@ from customtkinter import CTkImage
 
 # PIL 用于预览图片
 try:
-    from PIL import Image, ImageOps
+    from PIL import Image
 
     HAS_PIL = True
 except ImportError:
@@ -30,9 +31,67 @@ try:
 except ImportError:
     HAS_PYPINYIN = False
 
-from modules.config import ConfigManager, README_LABELS
-from modules.mod_ops import ModManager
+from modules.config import APP_DIR, ConfigManager, README_LABELS
+from modules.catalog_view import (
+    CARD,
+    COMPACT,
+    DETAILED,
+    VIEW_MODE_ORDER,
+    LocalCatalogState,
+    fit_card_text,
+    normalize_view_mode,
+)
+from modules.local_preview_cache import LocalPreviewCache
+from modules.mod_ops import ModManager, find_readme_files
+from modules.archive_installer import (
+    ArchiveInstallError,
+    InstallSelection,
+    cleanup_staging,
+    cleanup_target_temporaries,
+    format_bytes,
+    inspect_zip,
+    install_zip,
+    unique_target_name,
+    validate_mod_name,
+)
+from modules.gamebanana import GameBananaClient
+from modules.online_browser import OnlineBrowserFrame
+from modules.source_store import save_gamebanana_source, get_installed_sources, save_gamebanana_cover
+from modules.update_checker import check_file
+from modules.update_manager import update_from_zip, restore_backup
+from modules.source_store import update_gamebanana_source, restore_source_from_manifest
 from modules.i18n import t, get_i18n
+
+
+def _patch_transient_titlebar_color():
+    """Windows 上调用 transient() 会把标题栏配色重置为浅色。
+
+    customtkinter 仅在窗口初始化与 resizable() 时重新应用深色标题栏。
+    注意：不能在 transient() 内同步调用 _windows_set_titlebar_color()，
+    它内部会 withdraw 窗口并处理事件，若此时对话框尚未构建完成，随后
+    的 grab_set() 会作用在已 withdrawn 的窗口上，导致 Tk 事件循环卡死。
+    因此与库自身 resizable() 的做法一致，延迟到构建完成后再重新应用。
+    """
+    if not sys.platform.startswith("win"):
+        return
+    original = ctk.CTkToplevel.transient
+
+    def transient_with_titlebar_color(self, master=None):
+        result = original(self, master)
+        try:
+            self.after(
+                20,
+                lambda: self._windows_set_titlebar_color(
+                    ctk.get_appearance_mode()),
+            )
+        except Exception:
+            pass
+        return result
+
+    ctk.CTkToplevel.transient = transient_with_titlebar_color
+
+
+_patch_transient_titlebar_color()
 
 
 class ModManagerApp:
@@ -64,18 +123,30 @@ class ModManagerApp:
         # 禁用 Ctrl+G 切换主题
         self.root.bind("<Control-g>", lambda e: "break")
         self.root.bind("<Control-G>", lambda e: "break")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.mod_manager = None
         self.mods_data = []
         self.is_operating = False
-        self._checkbox_vars = {}  # mod_name -> ctk.BooleanVar
+        self._operation_cancel_event = None
+        self._operation_thread = None
+        self._closing = False
+        self._current_page = "local"
+        self._online_download = None
+        self._online_source = None
+        self._checking_updates = False
+        self._checkbox_vars = {}  # mod_name -> ctk.BooleanVar（该名称最新实例）
         self._group_checkbox_vars = {}  # group_name -> ctk.BooleanVar
         self._group_headers = {}  # group_name -> header frame
         self._group_contents = {}  # group_name -> content frame
         self._group_first_mod = {}  # group_name -> first mod name (for A-Z scroll)
         self._mod_to_group = {}  # mod_name -> group_name
-        self._mod_rows = {}  # mod_name -> row widgets dict
+        self._group_mods = {}  # group_name -> [mod names]
+        self._mod_rows = {}  # mod_name -> [row handles]
         self._preview_ctk_images = {}  # mod_name -> CTkImage
+        self._render_generation = 0
+        self._preview_targets = {}
+        self._readme_targets = {}
         # 分组级 A-Z 索引（全局右侧栏，跳转到分组标题）
         self._primary_alpha_index = {}  # letter -> 第一个匹配的分组名
         self._primary_alpha_buttons = {}  # letter -> button
@@ -84,13 +155,13 @@ class ModManagerApp:
         # 分组内部的迷你 A-Z 索引栏
         self._group_mini_alpha_bars = {}  # group_name -> {"frame", "buttons", "index"}
 
-        # 语言切换下拉菜单
-        self._lang_var = None
-        self._lang_menu = None
+        # 语言切换（设置菜单中的子菜单）
 
         # 工具栏可翻译控件引用
         self._toolbar_widgets = {}
-        self._view_mode = ConfigManager.get_view_mode()
+        self._local_state = LocalCatalogState(
+            view_mode=normalize_view_mode(ConfigManager.get_view_mode("local")))
+        self._view_mode = self._local_state.view_mode
         self._view_mode_var = None
         self._card_columns = None
         self._card_resize_job = None
@@ -99,8 +170,20 @@ class ModManagerApp:
 
         # 动态 DPI 缩放
         self._dpi_scale = self._get_dpi_scale_factor()
+        preview_cache_dir = os.path.join(
+            APP_DIR, "data", "cache", "local_previews")
+        self._local_preview_cache = LocalPreviewCache(preview_cache_dir)
+        self._preview_executor = ThreadPoolExecutor(
+            max_workers=3, thread_name_prefix="local-preview")
+        self._readme_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="local-readme")
+        self._background_futures = set()
+        self._background_futures_lock = threading.Lock()
+        self._track_background_future(
+            self._preview_executor.submit(self._local_preview_cache.prune))
 
         self._build_ui()
+        cleanup_staging()
         self._card_watch_job = self.root.after(150, self._watch_card_area)
         self._load_config_and_refresh(defer=True)
 
@@ -158,7 +241,36 @@ class ModManagerApp:
     # UI 构建
     # ============================================================
     def _build_ui(self):
-        # ---- 顶部栏 ----
+        # ---- 菜单栏（经典 Win32：位于最顶部，下方一条分割线）----
+        menubar = ctk.CTkFrame(self.root, height=36, corner_radius=0,
+                               fg_color=("gray90", "gray17"))
+        menubar.pack(fill="x", padx=0, pady=0)
+        menubar.pack_propagate(False)
+
+        self._settings_btn = ctk.CTkButton(
+            menubar, text=t("top.settings", "⚙️ 设置") + " ▾",
+            width=80, height=26, font=self._font(11),
+            fg_color="transparent", corner_radius=4,
+            hover_color=("gray80", "gray30"),
+            text_color=("gray15", "gray90"),
+            command=self._show_settings_menu)
+        self._settings_btn.pack(side="left", padx=(8, 2), pady=5)
+
+        self._more_btn = ctk.CTkButton(
+            menubar, text=t("top.more_mod_settings", "更多 Mod 设置") + " ▾",
+            width=116, height=26, font=self._font(11),
+            fg_color="transparent", corner_radius=4,
+            hover_color=("gray80", "gray30"),
+            text_color=("gray15", "gray90"),
+            command=self._show_mod_settings_menu)
+        self._more_btn.pack(side="left", padx=2, pady=5)
+
+        # 菜单栏与下方区域的分割线
+        menubar_sep = ctk.CTkFrame(self.root, height=1, corner_radius=0,
+                                   fg_color=("gray50", "gray30"))
+        menubar_sep.pack(fill="x", padx=0, pady=0)
+
+        # ---- 标题栏 ----
         top_frame = ctk.CTkFrame(self.root, height=56, corner_radius=0)
         top_frame.pack(fill="x", padx=0, pady=0)
         top_frame.pack_propagate(False)
@@ -176,6 +288,15 @@ class ModManagerApp:
         )
         self._subtitle_label.pack(side="left", padx=(0, 20), pady=12)
 
+        self._local_page_btn = ctk.CTkButton(
+            top_frame, text=t("top.local_page", "本地 Mods"), width=86, height=30,
+            command=lambda: self._switch_page("local"))
+        self._local_page_btn.pack(side="left", padx=2, pady=12)
+        self._online_page_btn = ctk.CTkButton(
+            top_frame, text=t("top.online_page", "在线 Mods"), width=86, height=30,
+            command=lambda: self._switch_page("online"))
+        self._online_page_btn.pack(side="left", padx=2, pady=12)
+
         self.path_label = ctk.CTkLabel(
             top_frame, text=t("top.no_folder", "未选择文件夹"),
             font=self._font(11),
@@ -183,40 +304,20 @@ class ModManagerApp:
         )
         self.path_label.pack(side="right", padx=(0, 10), pady=12)
 
-        self._refresh_btn = ctk.CTkButton(
-            top_frame, text=t("top.refresh", "🔄 刷新"), width=70, height=30,
-            font=self._font(11),
-            command=self._refresh
-        )
-        self._refresh_btn.pack(side="right", padx=(0, 8), pady=12)
-
         self._browse_btn = ctk.CTkButton(
             top_frame, text=t("top.browse", "📁 选择文件夹"), width=110, height=30,
             font=self._font(11),
             command=self._browse_folder
         )
-        self._browse_btn.pack(side="right", padx=(0, 8), pady=12)
-
-        self._lang_var = ctk.StringVar(value=self._lang_menu_display())
-        self._lang_menu = ctk.CTkOptionMenu(
-            top_frame,
-            values=self._lang_menu_values(),
-            variable=self._lang_var,
-            command=self._on_language_change,
-            width=70, height=30,
-            font=self._font(10),
-            fg_color=("gray85", "gray25"),
-            text_color=("gray20", "gray85"),
-            button_color=("gray70", "gray30"),
-            button_hover_color=("gray60", "gray40"),
-        )
-        self._lang_menu.pack(side="right", padx=(0, 8), pady=12)
+        if not ConfigManager.get_game_path():
+            self._browse_btn.pack(side="right", padx=(0, 8), pady=12)
 
         # ---- 工具栏 ----
         toolbar = ctk.CTkFrame(self.root, height=42, corner_radius=0,
                                fg_color=("gray90", "gray17"))
         toolbar.pack(fill="x", padx=0, pady=(0, 0))
         toolbar.pack_propagate(False)
+        self._local_toolbar = toolbar
 
         toolbar_inner = ctk.CTkFrame(toolbar, fg_color=("gray90", "gray17"))
         toolbar_inner.pack(side="left", fill="y", padx=14, pady=4)
@@ -288,21 +389,37 @@ class ModManagerApp:
         w_manage_groups.pack(side="left", padx=2)
         self._toolbar_widgets["manage_groups"] = w_manage_groups
 
+        self._refresh_btn = ctk.CTkButton(
+            toolbar, text=t("top.refresh", "🔄 刷新"), width=70, height=26,
+            font=self._font(11),
+            command=self._refresh
+        )
+        self._refresh_btn.pack(side="right", padx=(0, 14), pady=7)
+
+        w_install_zip = ctk.CTkButton(
+            toolbar, text=t("toolbar.install_zip", "安装 ZIP"),
+            width=82, height=26, font=self._font(10),
+            command=self._install_zip_from_file,
+        )
+        w_install_zip.pack(side="right", padx=(2, 2), pady=7)
+        self._toolbar_widgets["install_zip"] = w_install_zip
+
         self._view_mode_var = ctk.StringVar(value=self._view_mode)
         self._view_switch = ctk.CTkSegmentedButton(
             toolbar,
-            values=["list", "card"],
+            values=list(VIEW_MODE_ORDER),
             variable=self._view_mode_var,
             command=self._on_view_mode_change,
-            width=132, height=28,
+            width=220, height=28,
             font=self._font(10),
         )
-        self._view_switch.pack(side="right", padx=(6, 14), pady=7)
+        self._view_switch.pack(side="right", padx=(6, 2), pady=7)
         self._update_view_switch_labels()
 
         # ---- 主体区域 ----
         body = ctk.CTkFrame(self.root, fg_color=("gray95", "gray14"))
         body.pack(fill="both", expand=True, padx=0, pady=0)
+        self._local_body = body
 
         # Mod 列表（可滚动）
         self.scroll_frame = ctk.CTkScrollableFrame(body, label_text="")
@@ -310,6 +427,10 @@ class ModManagerApp:
 
         # A-Z 侧边栏（仅分组级跳转）
         self._build_alphabet_bar(body)
+
+        self._online_frame = OnlineBrowserFrame(
+            self.root, self.root, self._install_online_file)
+        self._online_frame.pack_forget()
 
         # ---- 底部状态栏 ----
         self.status_bar = ctk.CTkFrame(self.root, height=28, corner_radius=0,
@@ -334,6 +455,12 @@ class ModManagerApp:
         self.progress_text = ctk.CTkLabel(
             self.progress_frame, text="",
             font=self._font(10)
+        )
+        self.progress_cancel_button = ctk.CTkButton(
+            self.progress_frame,
+            text=t("zip_install.cancel_install", "取消安装"),
+            width=86, height=24,
+            command=self._cancel_current_operation,
         )
 
     def _build_alphabet_bar(self, parent):
@@ -390,8 +517,12 @@ class ModManagerApp:
         self.root.title(t("app.title", "EFMI Mod Manager"))
         self._title_label.configure(text=t("app.title", "EFMI Mod Manager"))
         self._subtitle_label.configure(text=t("top.subtitle", "|  Mod 管理器"))
+        self._local_page_btn.configure(text=t("top.local_page", "本地 Mods"))
+        self._online_page_btn.configure(text=t("top.online_page", "在线 Mods"))
         self._browse_btn.configure(text=t("top.browse", "📁 选择文件夹"))
         self._refresh_btn.configure(text=t("top.refresh", "🔄 刷新"))
+        self._settings_btn.configure(text=t("top.settings", "⚙️ 设置") + " ▾")
+        self._more_btn.configure(text=t("top.more_mod_settings", "更多 Mod 设置") + " ▾")
 
         tw = self._toolbar_widgets
         tw["select_label"].configure(text=t("toolbar.select", "选择:"))
@@ -403,34 +534,383 @@ class ModManagerApp:
         tw["batch_disable"].configure(text=t("toolbar.batch_disable", "批量禁用"))
         tw["new_group"].configure(text=t("toolbar.new_group", "➕ 新建分组"))
         tw["manage_groups"].configure(text=t("toolbar.manage_groups", "✏️ 管理分组"))
+        tw["install_zip"].configure(text=t("toolbar.install_zip", "安装 ZIP"))
+        self.progress_cancel_button.configure(
+            text=t("zip_install.cancel_install", "取消安装"))
         self._update_view_switch_labels()
 
-        self._lang_var.set(self._lang_menu_display())
-        self._lang_menu.configure(values=self._lang_menu_values())
+        try:
+            self._online_frame.apply_language()
+        except Exception:
+            pass
 
         self._refresh()
 
+    def _switch_page(self, page):
+        if page == self._current_page:
+            if page == "online":
+                self._online_frame.reload()
+            return
+        self._current_page = page
+        if page == "local":
+            self._online_frame.pack_forget()
+            self._local_toolbar.pack(fill="x", padx=0, pady=0, before=self.status_bar)
+            self._local_body.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
+            self._refresh()
+        else:
+            self._local_toolbar.pack_forget()
+            self._local_body.pack_forget()
+            self._online_frame.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
+            self._online_frame.begin_preload()
+            self._online_frame.reload()
+
+    def _check_updates(self):
+        if self.is_operating:
+            messagebox.showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
+            return
+        if self._checking_updates:
+            return
+        records = [record for record in get_installed_sources().values()
+                   if record.get("provider") == "gamebanana"]
+        if not records:
+            messagebox.showinfo(
+                t("dialog.title_hint", "提示"),
+                t("online.no_managed_mods", "没有找到可检查更新的 GameBanana Mod"))
+            return
+        self._checking_updates = True
+        self.status_label.configure(text=t("online.checking_updates", "正在检查 Mod 更新..."))
+
+        def worker():
+            client = GameBananaClient()
+            results = []
+            try:
+                for record in records:
+                    try:
+                        details = client.details(record["submission_id"], force=True)
+                        installed = type("Installed", (), {
+                            "file_id": record.get("file_id", 0),
+                            "file_name": record.get("file_name", ""),
+                            "date_added": record.get("file_date_added", 0),
+                            "description": record.get("file_description", ""),
+                            "md5": record.get("file_md5"),
+                        })()
+                        results.append((record, check_file(installed, details)))
+                    except Exception as exc:
+                        results.append((record, type("Result", (), {
+                            "kind": "error", "error": str(exc)})()))
+            finally:
+                client.close()
+            self.root.after(0, self._show_update_results, results)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restore_managed_backup(self):
+        records = [record for record in get_installed_sources().values()
+                   if record.get("provider") == "gamebanana"]
+        available = []
+        for record in records:
+            backup_dir = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "data", "backups",
+                record.get("instance_id", ""))
+            if os.path.isdir(backup_dir) and any(
+                    os.path.isdir(os.path.join(backup_dir, name)) for name in os.listdir(backup_dir)):
+                available.append(record)
+        if not available:
+            messagebox.showinfo(t("dialog.title_hint", "提示"),
+                                t("online.no_backups", "没有可恢复的在线 Mod 备份"))
+            return
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("top.restore_backup", "恢复备份"))
+        dialog.geometry("520x320")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        rows = ctk.CTkScrollableFrame(dialog, label_text="")
+        rows.pack(fill="both", expand=True, padx=12, pady=12)
+        for record in available:
+            ctk.CTkButton(
+                rows, text=record.get("folder_name", "-"), anchor="w",
+                command=lambda item=record: self._confirm_restore(item, dialog)
+            ).pack(fill="x", pady=3)
+
+    def _confirm_restore(self, record, dialog):
+        dialog.destroy()
+        if not messagebox.askyesno(
+                t("top.restore_backup", "恢复备份"),
+                t("online.restore_confirm", "恢复 {name} 的上一个版本？当前版本将被移除。").format(
+                    name=record.get("folder_name", "-"))):
+            return
+        try:
+            restore_backup(record)
+            restore_source_from_manifest(record["path"], record["instance_id"])
+            messagebox.showinfo(t("top.restore_backup", "恢复备份"),
+                                t("online.restore_success", "已恢复上一个版本"))
+            self._refresh()
+        except Exception as exc:
+            messagebox.showerror(t("online.update_failed", "更新失败"), str(exc))
+
+    def _show_update_results(self, results):
+        self._checking_updates = False
+        updates = [item for item in results if item[1].kind == "update_available"]
+        ambiguous = [item for item in results if item[1].kind == "ambiguous"]
+        unavailable = [item for item in results
+                       if item[1].kind in ("source_unavailable", "file_removed", "error")]
+        lines = (["可更新: {}".format(item[0].get("folder_name", "-")) for item in updates] +
+                 ["需人工选择: {}".format(item[0].get("folder_name", "-")) for item in ambiguous] +
+                 ["来源不可用: {}".format(item[0].get("folder_name", "-")) for item in unavailable])
+        if updates:
+            self._show_update_choice(updates)
+            return
+        messagebox.showinfo(
+            t("online.update_result_title", "更新检查结果"),
+            t("online.update_result", "检查了 {total} 个 Mod。\n\n{details}").format(
+                total=len(results), details="\n".join(lines) or "全部为最新版本"))
+        self.status_label.configure(text=t(
+            "online.update_status", "更新检查完成：{count} 个可更新").format(count=len(updates)))
+
+    def _show_update_choice(self, updates):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("online.update_result_title", "更新检查结果"))
+        dialog.geometry("680x360")
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ctk.CTkLabel(
+            dialog,
+            text=t("online.update_choose_hint", "选择一个更新候选。更新前会自动备份当前 Mod，失败时恢复。"),
+            wraplength=620, justify="left").pack(fill="x", padx=18, pady=14)
+        rows = ctk.CTkScrollableFrame(dialog, label_text="")
+        rows.pack(fill="both", expand=True, padx=14, pady=4)
+        selected = [None]
+        for record, result in updates:
+            remote = result.remote_file
+            row = ctk.CTkFrame(rows)
+            row.pack(fill="x", pady=3)
+            label = "{} -> {} ({})".format(
+                record.get("folder_name", "-"), remote.name,
+                remote.version or "-")
+            ctk.CTkButton(
+                row, text=label, anchor="w",
+                command=lambda item=(record, result): self._select_update(item, selected, dialog)
+            ).pack(fill="x", padx=5, pady=5)
+        ctk.CTkButton(
+            dialog, text=t("dialog.cancel", "取消"),
+            command=dialog.destroy).pack(anchor="e", padx=18, pady=12)
+
+    def _select_update(self, item, selected, dialog):
+        selected[0] = item
+        dialog.destroy()
+        self._download_update(item[0], item[1].remote_file)
+
+    def _download_update(self, record, remote_file):
+        if not os.path.isdir(record.get("path", "")):
+            messagebox.showerror(
+                t("online.download_failed", "在线下载失败"),
+                t("online.update_path_missing", "受管 Mod 目录不存在，无法更新"))
+            return
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("online.downloading", "正在下载 GameBanana 文件..."), cancellable=True)
+
+        def worker():
+            try:
+                download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
+                os.makedirs(download_dir, exist_ok=True)
+                archive_path = os.path.abspath(os.path.join(
+                    download_dir, "gb-update-{}-{}.zip".format(record["submission_id"], remote_file.id)))
+                client = self._online_frame.client
+                client.download(remote_file, archive_path,
+                                cancel_event=self._operation_cancel_event,
+                                progress_callback=lambda done, total: self.root.after(
+                                    0, self._update_progress,
+                                    done / total if total else 0,
+                                    t("online.download_progress", "正在下载... {done}/{total}").format(
+                                        done=format_bytes(done), total=format_bytes(total))))
+                inspection = inspect_zip(archive_path)
+                self.root.after(0, self._on_update_download_ready, record, remote_file, inspection, None)
+            except Exception as exc:
+                self.root.after(0, self._on_update_download_ready, record, remote_file, None, str(exc))
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_update_download_ready(self, record, remote_file, inspection, error):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if error:
+            messagebox.showerror(t("online.download_failed", "在线下载失败"), error)
+            return
+        candidates = inspection.candidates
+        if len(candidates) != 1:
+            messagebox.showwarning(
+                t("online.update_requires_single_candidate", "更新需要明确的 Mod 候选"),
+                t("online.update_multiple_candidates", "更新 ZIP 包含多个候选，请先使用普通安装流程选择目标"))
+            return
+        if not messagebox.askyesno(
+                t("online.update_confirm_title", "确认更新"),
+                t("online.update_confirm", "将备份并替换 {name}，是否继续？").format(
+                    name=record.get("folder_name", "-"))):
+            return
+        self._start_update_install(record, remote_file, inspection, candidates[0])
+
+    def _start_update_install(self, record, remote_file, inspection, candidate):
+        self.is_operating = True
+        self._set_ui_enabled(False)
+        self._show_operation_progress(t("online.updating", "正在备份并替换 Mod..."), cancellable=True)
+        self._operation_cancel_event = threading.Event()
+
+        def progress(current, total, _stage):
+            self.root.after(0, self._update_progress, current / max(total, 1),
+                            t("online.update_progress", "正在准备更新... ({current}/{total})").format(current=current, total=total))
+
+        def worker():
+            backup = None
+            try:
+                backup = update_from_zip(
+                    inspection, candidate, record["path"], record,
+                    progress_callback=progress, cancel_event=self._operation_cancel_event)
+                details = self._online_frame.client.details(record["submission_id"])
+                update_gamebanana_source(record, details, remote_file)
+                cover_url = details.images[0].url if details.images else None
+                if cover_url:
+                    self._save_cover_in_background(
+                        record["path"], record["folder_name"], cover_url)
+                self.root.after(0, self._on_update_complete, True, backup, None)
+            except Exception as exc:
+                if backup:
+                    try:
+                        restore_backup(record)
+                        restore_source_from_manifest(record["path"], record["instance_id"])
+                    except Exception as rollback_exc:
+                        exc = RuntimeError("{}; 自动恢复失败: {}".format(exc, rollback_exc))
+                self.root.after(0, self._on_update_complete, False, None, str(exc))
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_update_complete(self, success, backup, error):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if success:
+            messagebox.showinfo(
+                t("online.update_result_title", "更新完成"),
+                t("online.update_success", "更新完成，旧版本已备份。\n\n备份：{path}").format(path=backup))
+            self._refresh()
+        else:
+            messagebox.showerror(t("online.update_failed", "更新失败"), error)
+
+    def _save_cover_in_background(self, mod_path, mod_name, cover_url):
+        def worker():
+            try:
+                save_gamebanana_cover(
+                    self._online_frame.client.fetch_image, cover_url,
+                    mod_path, mod_name)
+            except Exception:
+                return
+            try:
+                if not self._closing:
+                    self.root.after(0, self._refresh)
+            except Exception:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _install_online_file(self, details, remote_file):
+        if self.is_operating:
+            messagebox.showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
+            return
+        game_path = ConfigManager.get_game_path()
+        manager = ModManager(game_path)
+        valid, error, _ = manager.validate()
+        if not valid:
+            messagebox.showwarning(t("dialog.title_warning", "提示"), error)
+            return
+        try:
+            ConfigManager.ensure_app_dir_writable()
+        except OSError as exc:
+            messagebox.showerror(t("dialog.title_error", "错误"), str(exc))
+            return
+        if not messagebox.askyesno(
+                t("online.install_confirm_title", "确认在线安装"),
+                t("online.install_confirm", "下载并安装 {name}？\n\n文件：{file}\n大小：{size}").format(
+                    name=details.name, file=remote_file.name,
+                    size=format_bytes(remote_file.size))):
+            return
+        self.mod_manager = manager
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("online.downloading", "正在下载 GameBanana 文件..."), cancellable=True)
+
+        def worker():
+            try:
+                import os
+                download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
+                os.makedirs(download_dir, exist_ok=True)
+                safe_name = "gb-{}-{}-download.zip".format(details.id, remote_file.id)
+                archive_path = os.path.abspath(os.path.join(download_dir, safe_name))
+                client = self._online_frame.client
+                client.download(
+                    remote_file, archive_path,
+                    cancel_event=self._operation_cancel_event,
+                    progress_callback=lambda done, total: self.root.after(
+                        0, self._update_progress,
+                        done / total if total else 0,
+                        t("online.download_progress", "正在下载... {done}/{total}").format(
+                            done=format_bytes(done), total=format_bytes(total))))
+                inspection = inspect_zip(archive_path)
+                self.root.after(0, self._on_online_download_ready, details, remote_file, inspection, None)
+            except Exception as exc:
+                self.root.after(0, self._on_online_download_ready, details, remote_file, None, str(exc))
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_online_download_ready(self, details, remote_file, inspection, error):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if error:
+            messagebox.showerror(t("online.download_failed", "在线下载失败"), error)
+            return
+        selections = self._show_zip_candidates_dialog(inspection)
+        if selections:
+            self._online_source = (details, remote_file)
+            self._start_zip_install(inspection, selections)
+
     def _view_mode_labels(self):
         return {
-            "list": t("toolbar.view_list", "☷ 列表"),
-            "card": t("toolbar.view_card", "▦ 卡片"),
+            COMPACT: t("toolbar.view_compact", "☷ 紧凑列表"),
+            CARD: t("toolbar.view_card", "▦ 卡片"),
+            DETAILED: t("toolbar.view_detailed", "☰ 详情列表"),
         }
 
     def _update_view_switch_labels(self):
         labels = self._view_mode_labels()
-        self._view_switch.configure(values=[labels["list"], labels["card"]])
+        self._view_switch.configure(
+            values=[labels[mode] for mode in VIEW_MODE_ORDER])
         self._view_mode_var.set(labels[self._view_mode])
 
     def _on_view_mode_change(self, selected_label):
         labels = self._view_mode_labels()
-        mode = "card" if selected_label == labels["card"] else "list"
-        if mode == self._view_mode:
+        by_label = {label: mode for mode, label in labels.items()}
+        mode = by_label.get(selected_label)
+        if mode is None or mode == self._view_mode:
             return
         self._view_mode = mode
-        if mode != "card" and self._card_resize_job is not None:
+        self._local_state.view_mode = mode
+        if mode != CARD and self._card_resize_job is not None:
             self.root.after_cancel(self._card_resize_job)
             self._card_resize_job = None
-        ConfigManager.set_view_mode(mode)
+        ConfigManager.set_view_mode("local", mode)
         self._render_mod_list()
 
     def _get_card_column_count(self, measured_width=None):
@@ -453,7 +933,7 @@ class ModManagerApp:
         if self.root.winfo_exists():
             self.root.update_idletasks()
             self._card_area_width = self.scroll_frame._parent_canvas.winfo_width()
-            if self._view_mode == "card" and self.mods_data:
+            if self._view_mode == CARD and self.mods_data:
                 columns = self._get_card_column_count(self._card_area_width)
                 if columns != self._card_columns:
                     self._refresh_card_columns()
@@ -461,19 +941,12 @@ class ModManagerApp:
 
     def _refresh_card_columns(self):
         self._card_resize_job = None
-        if self._view_mode != "card":
+        if self._view_mode != CARD:
             return
         columns = self._get_card_column_count()
         if columns == self._card_columns:
             return
-
-        selected_names = {
-            name for name, var in self._checkbox_vars.items() if var.get()
-        }
         self._render_mod_list()
-        for name in selected_names:
-            if name in self._checkbox_vars:
-                self._checkbox_vars[name].set(True)
         self._sync_all_group_checkboxes()
 
     # ---- 中文拼音索引支持 ----
@@ -538,63 +1011,6 @@ class ModManagerApp:
                         pass
                 return '#'
         return '#'
-
-    @staticmethod
-    def _fit_card_text(text, font, max_width):
-        """按自然断点换行，并将卡片文字限制为最多两行。"""
-        if not text:
-            return ""
-
-        # 英文单词、版本号和带连接符的名称尽量保持完整；中文等字符可逐字换行。
-        tokens = re.findall(
-            r"\s+|[A-Za-z0-9]+(?:[._'-][A-Za-z0-9]+)*|.",
-            text,
-        )
-        lines = []
-        current = ""
-        truncated = False
-
-        while tokens and len(lines) < 2:
-            token = tokens.pop(0)
-            candidate = current + token
-            if font.measure(candidate.rstrip()) <= max_width:
-                current = candidate
-                continue
-
-            if current.strip():
-                lines.append(current.rstrip())
-                current = ""
-                if len(lines) == 2:
-                    truncated = True
-                    break
-                token = token.lstrip()
-                if token:
-                    tokens.insert(0, token)
-                continue
-
-            # 单个连续名称本身超过一行时，只能在字符中间断开。
-            fitted = ""
-            for index, char in enumerate(token):
-                if fitted and font.measure(fitted + char) > max_width:
-                    lines.append(fitted)
-                    remainder = token[index:]
-                    if remainder:
-                        tokens.insert(0, remainder)
-                    break
-                fitted += char
-            else:
-                current = fitted
-
-        if len(lines) < 2 and current:
-            lines.append(current.rstrip())
-
-        if (tokens or truncated) and lines:
-            last = lines[-1].rstrip()
-            while last and font.measure(last + "...") > max_width:
-                last = last[:-1].rstrip()
-            lines[-1] = last + "..."
-
-        return "\n".join(lines[:2])
 
     def _rebuild_alphabet_bar(self):
         """重建一级 A-Z 索引：分组名首字母（全局右侧栏）"""
@@ -720,10 +1136,12 @@ class ModManagerApp:
         if letter not in alpha_index:
             return
         mod_name = alpha_index[letter]
-        row_info = self._mod_rows.get(mod_name)
-        if not row_info:
-            return
-        widget = row_info.get("row_frame")
+        handles = self._mod_rows.get(mod_name) or []
+        widget = None
+        for handle in handles:
+            widget = handle.get("row_frame")
+            if widget:
+                break
         if widget and widget.winfo_exists():
             self._scroll_to_widget(widget)
 
@@ -758,9 +1176,501 @@ class ModManagerApp:
                 fraction = max(0, min(1, widget_y / total_h))
                 canvas.yview_moveto(fraction)
 
+    def _capture_scroll_anchor(self):
+        """按首个可见 Mod 的标识记录滚动锚点（与布局高度无关）。"""
+        if not self._mod_rows:
+            return None
+        canvas = self.scroll_frame._parent_canvas
+        try:
+            canvas_top = canvas.winfo_rooty()
+            canvas_height = canvas.winfo_height()
+        except Exception:
+            return None
+        best = None
+        for name, handles in self._mod_rows.items():
+            for handle in handles:
+                widget = handle.get("row_frame")
+                if not widget:
+                    continue
+                try:
+                    if not widget.winfo_exists() or not widget.winfo_manager():
+                        continue
+                    delta = widget.winfo_rooty() - canvas_top
+                except Exception:
+                    continue
+                if -50 <= delta < canvas_height and (best is None or delta < best[1]):
+                    best = (name, delta)
+        return best
+
+    def _restore_scroll_anchor(self, anchor):
+        """按锚点 Mod 恢复滚动位置（按像素偏移换算到新布局）。"""
+        if not anchor:
+            return
+        name, offset = anchor
+        handles = self._mod_rows.get(name) or []
+        widget = None
+        for handle in handles:
+            widget = handle.get("row_frame")
+            if widget:
+                break
+        if not widget:
+            return
+        try:
+            self.root.update_idletasks()
+            canvas = self.scroll_frame._parent_canvas
+            if not widget.winfo_exists() or not widget.winfo_manager():
+                return
+            delta = widget.winfo_rooty() - canvas.winfo_rooty()
+            if abs(delta - offset) < 4:
+                return
+            bbox = canvas.bbox("all")
+            content_h = bbox[3] - bbox[1] if bbox else 0
+            viewport_h = canvas.winfo_height()
+            if content_h <= viewport_h:
+                return
+            current = canvas.yview()[0]
+            fraction_delta = (delta - offset) / float(content_h)
+            canvas.yview_moveto(max(0.0, min(1.0, current + fraction_delta)))
+        except Exception:
+            return
+
     # ============================================================
     # 选择文件夹 / 刷新
     # ============================================================
+    def _install_zip_from_file(self):
+        if self.is_operating:
+            messagebox.showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
+            return
+
+        game_path = ConfigManager.get_game_path()
+        manager = ModManager(game_path)
+        valid, error, _ = manager.validate()
+        if not valid:
+            messagebox.showwarning(t("dialog.title_warning", "提示"), error)
+            return
+        try:
+            ConfigManager.ensure_app_dir_writable()
+        except OSError as exc:
+            messagebox.showerror(
+                t("dialog.title_error", "错误"),
+                t("zip_install.app_dir_readonly",
+                  "程序目录不可写，无法创建安装暂存和配置文件。\n\n请将便携版移动到有写入权限的目录后重试。\n\n{error}").format(
+                      error=exc))
+            return
+
+        archive_path = filedialog.askopenfilename(
+            title=t("zip_install.choose_title", "选择要安装的 ZIP Mod"),
+            filetypes=[
+                (t("zip_install.zip_files", "ZIP 压缩包"), "*.zip"),
+                (t("zip_install.all_files", "所有文件"), "*.*"),
+            ],
+        )
+        if not archive_path:
+            return
+
+        self.mod_manager = manager
+        self.is_operating = True
+        self._set_ui_enabled(False)
+        self._show_operation_progress(t("zip_install.inspecting", "正在安全检查 ZIP..."))
+
+        def worker():
+            try:
+                inspection = inspect_zip(archive_path)
+                self.root.after(0, self._on_zip_inspected, inspection, None)
+            except Exception as exc:
+                self.root.after(0, self._on_zip_inspected, None, str(exc))
+
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_zip_inspected(self, inspection, error):
+        self._operation_thread = None
+        if self._closing:
+            self.root.destroy()
+            return
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if error:
+            messagebox.showerror(
+                t("zip_install.inspect_failed_title", "ZIP 检查失败"), error)
+            return
+
+        selections = self._show_zip_candidates_dialog(inspection)
+        if not selections:
+            return
+        self._start_zip_install(inspection, selections)
+
+    def _show_zip_candidates_dialog(self, inspection):
+        result = [None]
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("zip_install.confirm_title", "确认安装 ZIP"))
+        dialog.geometry("700x520")
+        dialog.minsize(620, 420)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        summary = t(
+            "zip_install.summary",
+            "{archive}\n检测到 {candidates} 个候选 Mod，共 {files} 个文件，解压后约 {size}"
+        ).format(
+            archive=inspection.archive_name,
+            candidates=len(inspection.candidates),
+            files=inspection.file_count,
+            size=format_bytes(inspection.total_size),
+        )
+        ctk.CTkLabel(
+            dialog, text=summary, justify="left", anchor="w",
+            font=self._font(12, weight="bold"),
+        ).pack(fill="x", padx=18, pady=(16, 8))
+
+        hint = t(
+            "zip_install.hint",
+            "勾选要安装的候选并确认文件夹名。同名项目已自动生成“保留两者”的新名称。")
+        ctk.CTkLabel(
+            dialog, text=hint, justify="left", anchor="w",
+            wraplength=650, text_color="gray", font=self._font(10),
+        ).pack(fill="x", padx=18, pady=(0, 8))
+
+        rows_frame = ctk.CTkScrollableFrame(dialog, label_text="")
+        rows_frame.pack(fill="both", expand=True, padx=16, pady=4)
+
+        row_states = []
+        reserved_names = set()
+        roots = [self.mod_manager.mods_dir, self.mod_manager.disabled_dir]
+        for candidate in inspection.candidates:
+            suggested = unique_target_name(candidate.suggested_name, roots)
+            while suggested.casefold() in reserved_names:
+                suggested = unique_target_name(suggested + " (2)", roots)
+            reserved_names.add(suggested.casefold())
+
+            row = ctk.CTkFrame(rows_frame)
+            row.pack(fill="x", padx=2, pady=4)
+            selected_var = ctk.BooleanVar(value=True)
+            ctk.CTkCheckBox(row, text="", variable=selected_var, width=24).pack(
+                side="left", padx=(10, 4), pady=12)
+            info = t("zip_install.candidate_info", "{files} 个文件 / {size}").format(
+                files=candidate.file_count, size=format_bytes(candidate.total_size))
+            ctk.CTkLabel(
+                row, text=info, width=140, anchor="w", text_color="gray",
+                font=self._font(9),
+            ).pack(side="right", padx=(6, 10), pady=10)
+            name_var = ctk.StringVar(value=suggested)
+            entry = ctk.CTkEntry(row, textvariable=name_var)
+            entry.pack(side="left", fill="x", expand=True, padx=(4, 6), pady=9)
+            row_states.append((candidate, selected_var, name_var))
+
+        enabled_text = t("zip_install.target_enabled", "启用（Mods）")
+        disabled_text = t("zip_install.target_disabled", "禁用（Disabled_Mods）")
+        target_var = ctk.StringVar(value=enabled_text)
+        target_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        target_row.pack(fill="x", padx=18, pady=(8, 2))
+        ctk.CTkLabel(
+            target_row, text=t("zip_install.target_label", "安装后状态："),
+            font=self._font(11),
+        ).pack(side="left")
+        ctk.CTkOptionMenu(
+            target_row, values=[enabled_text, disabled_text], variable=target_var,
+            width=210,
+        ).pack(side="left", padx=8)
+
+        button_row = ctk.CTkFrame(dialog, fg_color="transparent")
+        button_row.pack(fill="x", padx=18, pady=(10, 16))
+
+        def confirm():
+            selections = []
+            planned_names = set()
+            for candidate, selected_var, name_var in row_states:
+                if not selected_var.get():
+                    continue
+                name = name_var.get().strip()
+                try:
+                    validate_mod_name(name)
+                except ArchiveInstallError as exc:
+                    messagebox.showwarning(
+                        t("zip_install.invalid_name_title", "文件夹名无效"),
+                        "{}: {}".format(candidate.suggested_name, exc),
+                        parent=dialog)
+                    return
+                key = name.casefold()
+                if key in planned_names:
+                    messagebox.showwarning(
+                        t("zip_install.name_conflict_title", "名称冲突"),
+                        t("zip_install.name_conflict", "多个候选不能使用同一个目标名称：{name}").format(name=name),
+                        parent=dialog)
+                    return
+                if unique_target_name(name, roots) != name:
+                    messagebox.showwarning(
+                        t("zip_install.name_conflict_title", "名称冲突"),
+                        t("zip_install.existing_conflict", "Mods 或 Disabled_Mods 中已存在同名目录：{name}").format(name=name),
+                        parent=dialog)
+                    return
+                planned_names.add(key)
+                selections.append(InstallSelection(
+                    candidate=candidate,
+                    target_name=name,
+                    enabled=target_var.get() == enabled_text,
+                ))
+            if not selections:
+                messagebox.showinfo(
+                    t("dialog.title_hint", "提示"),
+                    t("zip_install.select_candidate", "请至少选择一个候选 Mod"),
+                    parent=dialog)
+                return
+            result[0] = selections
+            dialog.destroy()
+
+        ctk.CTkButton(
+            button_row, text=t("zip_install.install_button", "开始安装"),
+            command=confirm,
+        ).pack(side="right", padx=(6, 0))
+        ctk.CTkButton(
+            button_row, text=t("dialog.cancel", "取消"),
+            fg_color=("gray70", "gray30"), command=dialog.destroy,
+        ).pack(side="right")
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        self.root.wait_window(dialog)
+        return result[0]
+
+    def _start_zip_install(self, inspection, selections):
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("zip_install.installing", "正在安装 ZIP..."), cancellable=True)
+
+        def progress(current, total, name):
+            pct = current / total if total else 0
+            status = t(
+                "zip_install.install_progress",
+                "正在安装 {name}... ({current}/{total} 个文件)"
+            ).format(name=name, current=current, total=total)
+            self.root.after(0, self._update_progress, pct, status)
+
+        def worker():
+            try:
+                results = install_zip(
+                    inspection, selections,
+                    self.mod_manager.mods_dir, self.mod_manager.disabled_dir,
+                    progress_callback=progress,
+                    cancel_event=self._operation_cancel_event,
+                )
+                self.root.after(0, self._on_zip_install_complete, results, None)
+            except Exception as exc:
+                self.root.after(0, self._on_zip_install_complete, [], str(exc))
+
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_zip_install_complete(self, results, error):
+        self._operation_thread = None
+        if self._closing:
+            self.root.destroy()
+            return
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        self._operation_cancel_event = None
+        if error:
+            messagebox.showerror(t("zip_install.failed_title", "ZIP 安装失败"), error)
+            self._refresh()
+            return
+
+        succeeded = [item for item in results if item.success]
+        failed = [item for item in results if not item.success]
+        if succeeded and self._online_source:
+            details, remote_file = self._online_source
+            cover_url = details.images[0].url if details.images else None
+            for item in succeeded:
+                try:
+                    save_gamebanana_source(item.target_path, details, remote_file)
+                except Exception as exc:
+                    failed.append(type("SourceFailure", (), {
+                        "target_name": item.target_name, "error": str(exc)})())
+                if cover_url:
+                    self._save_cover_in_background(
+                        item.target_path, item.target_name, cover_url)
+            self._online_source = None
+        if failed:
+            details = "\n".join("{}: {}".format(item.target_name, item.error) for item in failed)
+            messagebox.showwarning(
+                t("zip_install.result_title", "ZIP 安装结果"),
+                t("zip_install.partial_result", "成功 {success} 个，失败 {failed} 个。\n\n{details}").format(
+                    success=len(succeeded), failed=len(failed), details=details))
+        self._refresh()
+        if succeeded and not failed:
+            self.status_label.configure(text=t(
+                "zip_install.success_status", "已安装 {count} 个 Mod：{names}").format(
+                    count=len(succeeded),
+                    names=", ".join(item.target_name for item in succeeded)))
+
+    def _show_operation_progress(self, text, cancellable=False):
+        self.progress_frame.pack(fill="x", padx=16, pady=(6, 0))
+        self.progress_bar.pack(side="left", padx=(10, 8))
+        self.progress_text.pack(side="left")
+        if cancellable:
+            self.progress_cancel_button.configure(state="normal")
+            self.progress_cancel_button.pack(side="right", padx=(8, 10), pady=4)
+        self.progress_bar.set(0)
+        self.progress_text.configure(text=text)
+
+    def _hide_operation_progress(self):
+        self.progress_frame.pack_forget()
+        self.progress_bar.pack_forget()
+        self.progress_text.pack_forget()
+        self.progress_cancel_button.pack_forget()
+
+    def _cancel_current_operation(self):
+        if self._operation_cancel_event is not None:
+            self._operation_cancel_event.set()
+            self.progress_cancel_button.configure(state="disabled")
+            self.progress_text.configure(
+                text=t("zip_install.cancelling", "正在取消并清理暂存文件..."))
+
+    def _on_close(self):
+        if self._closing:
+            return
+        thread = self._operation_thread
+        if thread is None or not thread.is_alive():
+            self._shutdown_background_loaders()
+            self.root.destroy()
+            return
+        self._closing = True
+        self._shutdown_background_loaders()
+        if self._operation_cancel_event is not None:
+            self._operation_cancel_event.set()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("zip_install.closing", "正在结束安装并清理暂存文件..."))
+        self.root.after(100, self._wait_for_operation_before_close)
+
+    def _wait_for_operation_before_close(self):
+        thread = self._operation_thread
+        if thread is not None and thread.is_alive():
+            self.root.after(100, self._wait_for_operation_before_close)
+            return
+        self.root.destroy()
+
+    def _shutdown_background_loaders(self):
+        self._closing = True
+        self._render_generation += 1
+        with self._background_futures_lock:
+            futures = tuple(self._background_futures)
+        for future in futures:
+            future.cancel()
+        self._preview_executor.shutdown(wait=False)
+        self._readme_executor.shutdown(wait=False)
+        try:
+            self._online_frame.destroy()
+        except Exception:
+            pass
+
+    def _track_background_future(self, future):
+        with self._background_futures_lock:
+            self._background_futures.add(future)
+
+        def discard(_done):
+            with self._background_futures_lock:
+                self._background_futures.discard(future)
+
+        future.add_done_callback(discard)
+        return future
+
+    def _update_browse_btn_visibility(self):
+        """选择文件夹按钮仅在尚未选择路径时显示，选中后隐藏。"""
+        try:
+            if ConfigManager.get_game_path():
+                self._browse_btn.pack_forget()
+            elif not self._browse_btn.winfo_ismapped():
+                self._browse_btn.pack(side="right", padx=(0, 8), pady=12)
+        except Exception:
+            pass
+
+    def _show_settings_menu(self, anchor=None):
+        import tkinter as tk
+
+        menu = tk.Menu(
+            self.root, tearoff=0,
+            bg="#2b2b2b", fg="#e0e0e0",
+            activebackground="#3B8ED0", activeforeground="white",
+            font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))),
+            bd=1, relief="flat",
+        )
+
+        lang_menu = tk.Menu(
+            menu, tearoff=0,
+            bg="#2b2b2b", fg="#e0e0e0",
+            activebackground="#3B8ED0", activeforeground="white",
+            font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))),
+        )
+        current = self._lang_menu_display()
+        for display_value in self._lang_menu_values():
+            label = f"  {'✓ ' if display_value == current else ''}{display_value}"
+            lang_menu.add_command(
+                label=label,
+                command=lambda v=display_value: self._on_language_change(v),
+            )
+        menu.add_cascade(
+            label=t("top.settings_language", "语言"), menu=lang_menu)
+        menu.add_separator()
+        menu.add_command(
+            label=t("top.browse", "📁 选择文件夹"),
+            command=self._browse_folder,
+        )
+
+        if anchor is not None:
+            try:
+                menu.tk_popup(
+                    anchor.winfo_rootx(),
+                    anchor.winfo_rooty() + anchor.winfo_height(),
+                )
+                menu.grab_release()
+                return
+            except Exception:
+                pass
+
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+
+    def _show_mod_settings_menu(self, anchor=None):
+        import tkinter as tk
+
+        menu = tk.Menu(
+            self.root, tearoff=0,
+            bg="#2b2b2b", fg="#e0e0e0",
+            activebackground="#3B8ED0", activeforeground="white",
+            font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))),
+            bd=1, relief="flat",
+        )
+        menu.add_command(
+            label=t("top.restore_backup", "恢复备份"),
+            command=self._restore_managed_backup,
+        )
+        menu.add_command(
+            label=t("top.check_gb_updates", "检查 GameBanana 模组更新"),
+            command=self._check_updates,
+        )
+
+        if anchor is not None:
+            try:
+                menu.tk_popup(
+                    anchor.winfo_rootx(),
+                    anchor.winfo_rooty() + anchor.winfo_height(),
+                )
+                menu.grab_release()
+                return
+            except Exception:
+                pass
+
+        try:
+            menu.tk_popup(self.root.winfo_pointerx(), self.root.winfo_pointery())
+        finally:
+            menu.grab_release()
+
     def _browse_folder(self):
         path = filedialog.askdirectory(title=t("top.browse", "选择游戏 Mod 文件夹（包含 Mods 和 Disabled_Mods 的目录）"))
         if path:
@@ -773,6 +1683,7 @@ class ModManagerApp:
             self.path_label.configure(text=os.path.basename(game_path) or game_path)
         else:
             self.path_label.configure(text=t("top.no_folder", "未选择文件夹"))
+        self._update_browse_btn_visibility()
         if defer:
             # Windows 完成顶层窗口映射后，滚动区才具有可用于计算卡片列数的实际宽度。
             self.root.after(10, self._refresh_when_layout_ready)
@@ -799,10 +1710,13 @@ class ModManagerApp:
         if not valid:
             self._show_empty_state(msg)
             return
+        cleanup_target_temporaries(
+            [self.mod_manager.mods_dir, self.mod_manager.disabled_dir])
 
         self.mods_data = self.mod_manager.scan_mods()
         valid_names = {m["name"] for m in self.mods_data}
         ConfigManager.cleanup_mod_data(valid_names)
+        self._local_state.prune_selection(valid_names)
 
         self._render_mod_list()
         self._update_stats()
@@ -816,6 +1730,9 @@ class ModManagerApp:
             ))
 
     def _show_empty_state(self, message):
+        self._render_generation += 1
+        self._preview_targets.clear()
+        self._readme_targets.clear()
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self._checkbox_vars.clear()
@@ -824,12 +1741,14 @@ class ModManagerApp:
         self._group_contents.clear()
         self._group_first_mod.clear()
         self._mod_to_group.clear()
+        self._group_mods.clear()
         self._mod_rows.clear()
         self._primary_alpha_index.clear()
         self._sorted_group_names.clear()
         self._preview_ctk_images.clear()
         self._group_mini_alpha_bars.clear()
         self.mods_data = []
+        self._local_state.selected_names.clear()
 
         label = ctk.CTkLabel(
             self.scroll_frame, text=message,
@@ -843,6 +1762,10 @@ class ModManagerApp:
     # 渲染 Mod 列表（带分组、折叠、复选框、迷你 A-Z 索引栏）
     # ============================================================
     def _render_mod_list(self):
+        anchor = self._capture_scroll_anchor()
+        self._render_generation += 1
+        self._preview_targets.clear()
+        self._readme_targets.clear()
         for widget in self.scroll_frame.winfo_children():
             widget.destroy()
         self._checkbox_vars.clear()
@@ -851,11 +1774,13 @@ class ModManagerApp:
         self._group_contents.clear()
         self._group_first_mod.clear()
         self._mod_to_group.clear()
+        self._group_mods.clear()
         self._mod_rows.clear()
         self._preview_ctk_images.clear()
         self._group_mini_alpha_bars.clear()
-        if self._view_mode != "card":
+        if self._view_mode != CARD:
             self._card_columns = None
+        self._local_state.prune_selection(m["name"] for m in self.mods_data)
 
         if not self.mods_data:
             ctk.CTkLabel(
@@ -905,6 +1830,10 @@ class ModManagerApp:
             )
             self._create_group_section(t("mod_list.ungrouped", "未分组"), unassigned, notes, images,
                                        is_collapsed=(t("mod_list.ungrouped", "未分组") in collapsed))
+
+        if self.mods_data:
+            self._restore_scroll_anchor(anchor)
+            self._sync_all_group_checkboxes()
 
     def _create_group_section(self, gname, mods, notes, images, is_collapsed=False):
         # ---- 分组标题栏 ----
@@ -959,6 +1888,7 @@ class ModManagerApp:
             content.pack(fill="x", padx=2, pady=0)
 
         self._group_contents[gname] = content
+        self._group_mods[gname] = [m["name"] for m in mods]
 
         if mods:
             self._group_first_mod[gname] = mods[0]["name"]
@@ -967,7 +1897,7 @@ class ModManagerApp:
         left_frame = ctk.CTkFrame(content, fg_color=("gray95", "gray14"))
         left_frame.pack(side="left", fill="both", expand=True)
 
-        if self._view_mode == "card":
+        if self._view_mode == CARD:
             self.root.update_idletasks()
             columns = self._get_card_column_count()
             self._card_columns = columns
@@ -988,16 +1918,31 @@ class ModManagerApp:
         else:
             card_grid = left_frame
 
+        cards = []
         for index, mod in enumerate(mods):
             self._mod_to_group[mod["name"]] = gname
-            if self._view_mode == "card":
-                self._create_mod_card(
+            if self._view_mode == CARD:
+                cards.append(self._create_mod_card(
                     card_grid, mod, notes.get(mod["name"], ""),
                     images.get(mod["name"], ""), index, columns, card_width,
-                )
+                ))
+            elif self._view_mode == DETAILED:
+                self._create_mod_detailed_row(
+                    left_frame, mod, notes.get(mod["name"], ""),
+                    images.get(mod["name"], ""))
             else:
                 self._create_mod_row(left_frame, mod, notes.get(mod["name"], ""),
                                      images.get(mod["name"], ""))
+
+        if cards:
+            self.root.update_idletasks()
+            uniform_height = max(
+                1, round(max(
+                    card.winfo_reqheight() for card in cards) / self._dpi_scale),
+            )
+            for card in cards:
+                card.configure(width=self.CARD_WIDTH, height=uniform_height)
+                card.pack_propagate(False)
 
         # 右栏：该组的迷你 A-Z 索引
         self._build_group_mini_alpha_bar(content, gname, mods, notes)
@@ -1065,6 +2010,127 @@ class ModManagerApp:
                 return alt
         return ""
 
+    def _schedule_card_preview(self, label, source_path, image_size,
+                               display_size, preview_height):
+        generation = self._render_generation
+        target_id = id(label)
+        self._preview_targets[target_id] = (
+            generation, label, source_path, display_size, preview_height)
+        try:
+            future = self._track_background_future(
+                self._preview_executor.submit(
+                    self._local_preview_cache.load, source_path, image_size))
+        except RuntimeError:
+            return
+
+        def completed(done):
+            try:
+                image = done.result()
+            except Exception:
+                image = None
+            try:
+                self.root.after(
+                    0, self._apply_card_preview, target_id, generation, image)
+            except Exception:
+                pass
+
+        future.add_done_callback(completed)
+
+    def _apply_card_preview(self, target_id, generation, image):
+        target = self._preview_targets.get(target_id)
+        if (self._closing or target is None or target[0] != generation or
+                generation != self._render_generation):
+            return
+        _generation, label, source_path, display_size, preview_height = target
+        try:
+            if not label.winfo_exists():
+                return
+        except Exception:
+            return
+        if image is None:
+            label.configure(
+                image=None,
+                text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
+                font=self._font(11), text_color=("gray48", "gray55"),
+                fg_color=("gray84", "gray19"),
+            )
+            return
+        ctk_img = CTkImage(
+            light_image=image, dark_image=image, size=display_size)
+        self._preview_ctk_images[target_id] = ctk_img
+        label.configure(image=ctk_img, text="", fg_color="transparent")
+        label.bind(
+            "<Button-1>", lambda _event, path=source_path:
+            self._show_full_image(path))
+        label.configure(height=preview_height, cursor="hand2")
+
+    def _schedule_card_readmes(self, controls, mod):
+        generation = self._render_generation
+        mod_path = mod["path"]
+        key = (generation, os.path.normcase(os.path.abspath(mod_path)))
+        target = (controls, mod_path)
+        targets = self._readme_targets.setdefault(key, [])
+        targets.append(target)
+        if len(targets) > 1:
+            return
+        try:
+            future = self._track_background_future(
+                self._readme_executor.submit(find_readme_files, mod_path))
+        except RuntimeError:
+            return
+
+        def completed(done):
+            try:
+                readme_files = done.result()
+            except Exception:
+                readme_files = []
+            try:
+                self.root.after(
+                    0, self._apply_card_readmes,
+                    key, generation, tuple(readme_files))
+            except Exception:
+                pass
+
+        future.add_done_callback(completed)
+
+    def _apply_card_readmes(self, key, generation, readme_files):
+        targets = self._readme_targets.pop(key, [])
+        if self._closing or generation != self._render_generation:
+            return
+        for controls, _mod_path in targets:
+            try:
+                if not controls.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            self._create_card_readme_button(controls, readme_files)
+
+    def _create_card_readme_button(self, controls, readme_files, side="right"):
+        if not readme_files:
+            return
+        readme_count = len(readme_files)
+        rf_name, rf_path = readme_files[0]
+        button_text = (
+            README_LABELS.get(rf_name, f"📄 {rf_name}")
+            if readme_count == 1
+            else f"📄 README x{readme_count}"
+        )
+        readme_btn = ctk.CTkButton(
+            controls, text=button_text,
+            width=72, height=24, font=self._font(8),
+            fg_color=("gray80", "gray25"),
+            hover_color=("gray70", "gray35"),
+            text_color=("gray25", "gray85"),
+        )
+        if readme_count == 1:
+            readme_btn.configure(
+                command=lambda path=rf_path: self.mod_manager.open_file(path))
+        else:
+            readme_btn.configure(
+                command=lambda button=readme_btn, files=readme_files:
+                self._show_readme_menu(button, files))
+        readme_btn.pack(side=side, padx=2)
+
     def _create_mod_row(self, parent, mod, note, image_path):
         name = mod["name"]
         enabled = mod["enabled"]
@@ -1075,7 +2141,7 @@ class ModManagerApp:
         row.pack_propagate(False)
 
         # ---- 复选框 ----
-        var = ctk.BooleanVar(value=False)
+        var = ctk.BooleanVar(value=name in self._local_state.selected_names)
         self._checkbox_vars[name] = var
         cb = ctk.CTkCheckBox(
             row, text="",
@@ -1087,35 +2153,19 @@ class ModManagerApp:
         )
         cb.pack(side="left", padx=(8, 4))
 
-        # ---- 预览图 ----
+        # ---- 预览图（异步，走本地二级缓存）----
         resolved_img = self._resolve_preview_path(mod["path"], image_path)
-        preview_created = False
         if resolved_img and HAS_PIL:
-            try:
-                with Image.open(resolved_img) as source_img:
-                    img = ImageOps.fit(
-                        source_img,
-                        self.PREVIEW_SIZE,
-                        method=Image.LANCZOS,
-                    )
-                ctk_img = CTkImage(light_image=img, dark_image=img,
-                                   size=self.PREVIEW_SIZE)
-                self._preview_ctk_images[name] = ctk_img
-                preview_label = ctk.CTkLabel(row, image=ctk_img, text="",
-                                              cursor="hand2")
-                preview_label.pack(side="left", padx=(0, 6))
-                preview_label.bind("<Button-1>",
-                                   lambda e, p=resolved_img: self._show_full_image(p))
-                for child in preview_label.winfo_children():
-                    child.bind("<Button-1>",
-                               lambda e, p=resolved_img: self._show_full_image(p))
-                preview_label._image_path = resolved_img
-                preview_created = True
-            except Exception:
-                pass
-
-        if not preview_created:
-            preview_label = ctk.CTkLabel(
+            preview = ctk.CTkLabel(
+                row, text="",
+                width=self.PREVIEW_SIZE[0], height=self.PREVIEW_SIZE[1],
+                fg_color=("gray84", "gray19"), corner_radius=4,
+            )
+            self._schedule_card_preview(
+                preview, resolved_img, self.PREVIEW_SIZE,
+                self.PREVIEW_SIZE, self.PREVIEW_SIZE[1])
+        else:
+            preview = ctk.CTkLabel(
                 row,
                 text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
                 width=self.PREVIEW_SIZE[0], height=self.PREVIEW_SIZE[1],
@@ -1124,7 +2174,7 @@ class ModManagerApp:
                 fg_color=("gray84", "gray19"),
                 corner_radius=4,
             )
-            preview_label.pack(side="left", padx=(0, 6))
+        preview.pack(side="left", padx=(0, 6))
 
         # ---- 名称区域 ----
         name_frame = ctk.CTkFrame(row, fg_color=("gray95", "gray13"))
@@ -1152,22 +2202,10 @@ class ModManagerApp:
         right_frame = ctk.CTkFrame(row, fg_color=("gray95", "gray13"))
         right_frame.pack(side="right", padx=(0, 4))
 
-        readme_files = []
+        readme_slot = ctk.CTkFrame(right_frame, fg_color=("gray95", "gray13"))
+        readme_slot.pack(side="left", padx=2)
         if self.mod_manager:
-            readme_files = self.mod_manager.check_readme_files(name, enabled)
-
-        for rf_name, rf_path in readme_files:
-            btn_text = README_LABELS.get(rf_name, f"📄 {rf_name}")
-            r_btn = ctk.CTkButton(
-                right_frame, text=btn_text,
-                width=90, height=22,
-                font=self._font(9),
-                fg_color=("gray80", "gray25"),
-                hover_color=("gray70", "gray35"),
-                text_color=("gray25", "gray85"),
-                command=lambda p=rf_path: self.mod_manager.open_file(p),
-            )
-            r_btn.pack(side="left", padx=2)
+            self._schedule_card_readmes(readme_slot, mod)
 
         # Switch 开关
         switch_var = ctk.BooleanVar(value=enabled)
@@ -1207,11 +2245,12 @@ class ModManagerApp:
             fg_color=("gray95", "gray13"),
             hover_color=("gray85", "gray25"),
             text_color=("gray40", "gray70"),
-            command=lambda m=mod, b=None: self._show_more_menu(m),
         )
+        more_btn.configure(
+            command=lambda m=mod, b=more_btn: self._show_more_menu(m, b))
         more_btn.pack(side="left", padx=2)
 
-        self._mod_rows[name] = {
+        self._mod_rows.setdefault(name, []).append({
             "row_frame": row,
             "switch": switch,
             "switch_var": switch_var,
@@ -1220,7 +2259,134 @@ class ModManagerApp:
             "name_label": name_label,
             "original_name_label": original_name_label,
             "mod": mod,
-        }
+        })
+
+    def _create_mod_detailed_row(self, parent, mod, note, image_path):
+        """详情列表行：大预览 + 名称/原名 + README 摘要 + 状态/开关 + 文件夹/更多。"""
+        name = mod["name"]
+        enabled = mod["enabled"]
+        scale = self._dpi_scale
+        display_size = (150, 84)
+        image_size = (max(60, round(150 * scale)), max(34, round(84 * scale)))
+
+        row = ctk.CTkFrame(parent, height=96, corner_radius=6,
+                           fg_color=("gray95", "gray13"))
+        row.pack(fill="x", padx=2, pady=2)
+        row.pack_propagate(False)
+
+        var = ctk.BooleanVar(value=name in self._local_state.selected_names)
+        self._checkbox_vars[name] = var
+        cb = ctk.CTkCheckBox(
+            row, text="",
+            checkbox_width=18, checkbox_height=18,
+            width=18,
+            variable=var,
+            onvalue=True, offvalue=False,
+            command=lambda n=name: self._on_mod_checkbox_toggle(n),
+        )
+        cb.pack(side="left", padx=(10, 8), pady=36)
+
+        resolved_img = self._resolve_preview_path(mod["path"], image_path)
+        if resolved_img and HAS_PIL:
+            preview = ctk.CTkLabel(
+                row, text="",
+                width=display_size[0], height=display_size[1],
+                fg_color=("gray84", "gray19"), corner_radius=6,
+            )
+            self._schedule_card_preview(
+                preview, resolved_img, image_size,
+                display_size, display_size[1])
+        else:
+            preview = ctk.CTkLabel(
+                row,
+                text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
+                width=display_size[0], height=display_size[1],
+                font=self._font(9),
+                text_color=("gray48", "gray55"),
+                fg_color=("gray84", "gray19"),
+                corner_radius=6,
+            )
+        preview.pack(side="left", padx=(0, 8), pady=6)
+
+        info = ctk.CTkFrame(row, fg_color=("gray95", "gray13"))
+        info.pack(side="left", fill="x", expand=True, padx=(0, 8))
+
+        display_name = note if note else name
+        name_label = ctk.CTkLabel(
+            info, text=display_name,
+            font=self._font(13, weight="bold"), anchor="w",
+        )
+        name_label.pack(fill="x", pady=(14, 0))
+
+        original_name_label = None
+        if note:
+            original_name_label = ctk.CTkLabel(
+                info, text=name,
+                font=self._font(9), text_color="gray", anchor="w",
+            )
+            original_name_label.pack(fill="x")
+
+        right_frame = ctk.CTkFrame(row, fg_color=("gray95", "gray13"))
+        right_frame.pack(side="right", padx=(0, 8), pady=24)
+
+        readme_slot = ctk.CTkFrame(right_frame, fg_color=("gray95", "gray13"))
+        readme_slot.pack(side="left", padx=2)
+        if self.mod_manager:
+            self._schedule_card_readmes(readme_slot, mod)
+
+        switch_var = ctk.BooleanVar(value=enabled)
+        switch = ctk.CTkSwitch(
+            right_frame, text="",
+            variable=switch_var,
+            onvalue=True, offvalue=False,
+            width=42,
+            switch_width=38, switch_height=20,
+            command=lambda n=name, sv=switch_var: self._on_switch_toggled(n, sv.get()),
+        )
+        switch.pack(side="left", padx=(6, 4))
+
+        status_label = ctk.CTkLabel(
+            right_frame,
+            text=t("mod_list.status_enabled", "启用") if enabled else t("mod_list.status_disabled", "禁用"),
+            font=self._font(9),
+            text_color="#3fb950" if enabled else "gray",
+        )
+        status_label.pack(side="left", padx=(0, 4))
+
+        open_btn = ctk.CTkButton(
+            right_frame, text="📂",
+            width=30, height=30,
+            font=self._font(12),
+            fg_color=("gray95", "gray13"),
+            hover_color=("gray85", "gray25"),
+            text_color=("gray40", "gray70"),
+            command=lambda m=mod: self._open_mod_folder(m),
+        )
+        open_btn.pack(side="left", padx=2)
+
+        more_btn = ctk.CTkButton(
+            right_frame, text="⋯",
+            width=30, height=30,
+            font=self._font(14, weight="bold"),
+            fg_color=("gray95", "gray13"),
+            hover_color=("gray85", "gray25"),
+            text_color=("gray40", "gray70"),
+        )
+        more_btn.configure(
+            command=lambda m=mod, b=more_btn: self._show_more_menu(m, b))
+        more_btn.pack(side="left", padx=2)
+
+        self._mod_rows.setdefault(name, []).append({
+            "row_frame": row,
+            "switch": switch,
+            "switch_var": switch_var,
+            "status_label": status_label,
+            "checkbox_var": var,
+            "name_label": name_label,
+            "original_name_label": original_name_label,
+            "mod": mod,
+        })
+        return row
 
     def _create_mod_card(self, parent, mod, note, image_path, index, columns, card_width):
         name = mod["name"]
@@ -1238,23 +2404,22 @@ class ModManagerApp:
         title_text_width = max(
             80, round((image_width - 50) / self._dpi_scale) - 4,
         )
-        fitted_title = self._fit_card_text(
+        fitted_title = fit_card_text(
             display_name, title_font, title_text_width,
         )
-        title_height = 40 if "\n" in fitted_title else 22
+        # 统一高度：标题恒为两行、原名区恒为两行，保证组内卡片等高。
+        title_height = 40
 
-        original_name_font = None
+        original_name_font = self._font(9)
         fitted_original_name = ""
-        original_height = 0
         if note:
-            original_name_font = self._font(9)
             original_text_width = max(
                 80, round((image_width - 44) / self._dpi_scale) - 4,
             )
-            fitted_original_name = self._fit_card_text(
+            fitted_original_name = fit_card_text(
                 name, original_name_font, original_text_width,
             )
-            original_height = 32 if "\n" in fitted_original_name else 18
+        original_height = 32
 
         card = ctk.CTkFrame(
             parent, width=self.CARD_WIDTH, corner_radius=8,
@@ -1268,24 +2433,16 @@ class ModManagerApp:
         card.grid_propagate(False)
 
         resolved_img = self._resolve_preview_path(mod["path"], image_path)
-        preview = None
         if resolved_img and HAS_PIL:
-            try:
-                with Image.open(resolved_img) as source_img:
-                    img = ImageOps.fit(source_img, image_size, method=Image.LANCZOS)
-                ctk_img = CTkImage(
-                    light_image=img, dark_image=img, size=display_image_size,
-                )
-                self._preview_ctk_images[name] = ctk_img
-                preview = ctk.CTkLabel(
-                    card, image=ctk_img, text="", height=preview_height,
-                    corner_radius=7, cursor="hand2",
-                )
-                preview.bind("<Button-1>", lambda e, p=resolved_img: self._show_full_image(p))
-            except Exception:
-                preview = None
-
-        if preview is None:
+            preview = ctk.CTkLabel(
+                card, text="", width=display_image_size[0],
+                height=preview_height, fg_color=("gray84", "gray19"),
+                corner_radius=7,
+            )
+            self._schedule_card_preview(
+                preview, resolved_img, image_size,
+                display_image_size, preview_height)
+        else:
             preview = ctk.CTkLabel(
                 card,
                 text=f"▧\n{t('mod_list.no_preview', '暂无预览图')}",
@@ -1300,7 +2457,7 @@ class ModManagerApp:
 
         title_row = ctk.CTkFrame(info, fg_color="transparent")
         title_row.pack(fill="x")
-        var = ctk.BooleanVar(value=False)
+        var = ctk.BooleanVar(value=name in self._local_state.selected_names)
         self._checkbox_vars[name] = var
         cb = ctk.CTkCheckBox(
             title_row, text="", width=18,
@@ -1324,14 +2481,14 @@ class ModManagerApp:
         name_label.place(x=0, y=0, relwidth=1, relheight=1)
 
         original_name_label = None
+        original_container = ctk.CTkFrame(
+            info, width=1,
+            height=original_height,
+            fg_color="transparent",
+        )
+        original_container.pack(fill="x", padx=(24, 0), pady=(0, 2))
+        original_container.pack_propagate(False)
         if note:
-            original_container = ctk.CTkFrame(
-                info, width=1,
-                height=original_height,
-                fg_color="transparent",
-            )
-            original_container.pack(fill="x", padx=(24, 0), pady=(0, 2))
-            original_container.pack_propagate(False)
             original_name_label = ctk.CTkLabel(
                 original_container, text=fitted_original_name,
                 font=original_name_font,
@@ -1362,8 +2519,9 @@ class ModManagerApp:
             font=self._font(14, weight="bold"),
             fg_color="transparent", hover_color=("gray82", "gray25"),
             text_color=("gray40", "gray70"),
-            command=lambda m=mod: self._show_more_menu(m),
         )
+        more_btn.configure(
+            command=lambda m=mod, b=more_btn: self._show_more_menu(m, b))
         more_btn.pack(side="right", padx=(2, 0))
         open_btn = ctk.CTkButton(
             controls, text="📂", width=28, height=28,
@@ -1374,40 +2532,10 @@ class ModManagerApp:
         )
         open_btn.pack(side="right", padx=2)
 
-        readme_files = self.mod_manager.check_readme_files(name, enabled) if self.mod_manager else []
-        if readme_files:
-            readme_count = len(readme_files)
-            rf_name, rf_path = readme_files[0]
-            button_text = (
-                README_LABELS.get(rf_name, f"📄 {rf_name}")
-                if readme_count == 1
-                else f"📄 README x{readme_count}"
-            )
-            readme_btn = ctk.CTkButton(
-                controls, text=button_text,
-                width=72, height=24, font=self._font(8),
-                fg_color=("gray80", "gray25"),
-                hover_color=("gray70", "gray35"),
-                text_color=("gray25", "gray85"),
-            )
-            if readme_count == 1:
-                readme_btn.configure(
-                    command=lambda p=rf_path: self.mod_manager.open_file(p),
-                )
-            else:
-                readme_btn.configure(
-                    command=lambda b=readme_btn, files=tuple(readme_files):
-                    self._show_readme_menu(b, files),
-                )
-            readme_btn.pack(side="right", padx=2)
+        if self.mod_manager:
+            self._schedule_card_readmes(controls, mod)
 
-        # 子控件先计算自然高度，再锁定卡片宽度，避免图片或长文字撑宽网格。
-        card.update_idletasks()
-        natural_height = max(1, round(card.winfo_reqheight() / self._dpi_scale))
-        card.configure(width=self.CARD_WIDTH, height=natural_height)
-        card.pack_propagate(False)
-
-        self._mod_rows[name] = {
+        self._mod_rows.setdefault(name, []).append({
             "row_frame": card,
             "switch": switch,
             "switch_var": switch_var,
@@ -1416,80 +2544,86 @@ class ModManagerApp:
             "name_label": name_label,
             "original_name_label": original_name_label,
             "mod": mod,
-        }
+        })
+        return card
 
     # ============================================================
-    # 复选框逻辑
+    # 复选框逻辑（选择状态以 _local_state.selected_names 为准）
     # ============================================================
+    def _all_names_in_group(self, gname):
+        return list(self._group_mods.get(gname, []))
+
+    def _set_selected(self, name, selected):
+        if selected:
+            self._local_state.selected_names.add(name)
+        else:
+            self._local_state.selected_names.discard(name)
+
+    def _sync_checkbox_vars(self, name):
+        for handle in self._mod_rows.get(name, []):
+            var = handle.get("checkbox_var")
+            if var is not None:
+                var.set(name in self._local_state.selected_names)
+
+    def _reset_switch_visual(self, name, value):
+        for handle in self._mod_rows.get(name, []):
+            var = handle.get("switch_var")
+            if var is not None:
+                var.set(value)
+
     def _on_group_checkbox_toggle(self, gname):
         is_checked = self._group_checkbox_vars[gname].get()
-        for mod_name, var in self._checkbox_vars.items():
-            if self._mod_to_group.get(mod_name) == gname:
-                var.set(is_checked)
+        for name in self._all_names_in_group(gname):
+            self._set_selected(name, is_checked)
+            self._sync_checkbox_vars(name)
+        self._sync_all_group_checkboxes()
 
     def _on_mod_checkbox_toggle(self, mod_name):
-        gname = self._mod_to_group.get(mod_name)
-        if gname and gname in self._group_checkbox_vars:
-            group_mod_names = [
-                mn for mn, g in self._mod_to_group.items()
-                if g == gname
-            ]
-            all_checked = True
-            any_checked = False
-            for mn in group_mod_names:
-                if mn in self._checkbox_vars:
-                    v = self._checkbox_vars[mn].get()
-                    if v:
-                        any_checked = True
-                    else:
-                        all_checked = False
-            group_var = self._group_checkbox_vars[gname]
-            if all_checked:
-                group_var.set(True)
-            elif not any_checked:
-                group_var.set(False)
+        var = self._checkbox_vars.get(mod_name)
+        if var is None:
+            return
+        self._set_selected(mod_name, var.get())
+        for handle in self._mod_rows.get(mod_name, []):
+            other = handle.get("checkbox_var")
+            if other is not None and other is not var:
+                other.set(var.get())
+        self._sync_all_group_checkboxes()
 
     def _select_all(self):
-        for var in self._checkbox_vars.values():
-            var.set(True)
+        self._local_state.selected_names = {
+            m["name"] for m in self.mods_data}
+        for name in self._local_state.selected_names:
+            self._sync_checkbox_vars(name)
         self._sync_all_group_checkboxes()
 
     def _deselect_all(self):
-        for var in self._checkbox_vars.values():
-            var.set(False)
+        self._local_state.selected_names.clear()
+        for handles in self._mod_rows.values():
+            for handle in handles:
+                var = handle.get("checkbox_var")
+                if var is not None:
+                    var.set(False)
         self._sync_all_group_checkboxes()
 
     def _invert_selection(self):
-        for var in self._checkbox_vars.values():
-            var.set(not var.get())
+        names = {m["name"] for m in self.mods_data}
+        self._local_state.selected_names = names - self._local_state.selected_names
+        for name in names:
+            self._sync_checkbox_vars(name)
         self._sync_all_group_checkboxes()
 
     def _sync_all_group_checkboxes(self):
         for gname, group_var in self._group_checkbox_vars.items():
-            group_mod_names = [
-                mn for mn, g in self._mod_to_group.items()
-                if g == gname
-            ]
-            if not group_mod_names:
+            names = self._all_names_in_group(gname)
+            if not names:
                 group_var.set(False)
                 continue
-            all_checked = True
-            for mn in group_mod_names:
-                if mn in self._checkbox_vars:
-                    if not self._checkbox_vars[mn].get():
-                        all_checked = False
-                        break
-            group_var.set(all_checked)
+            group_var.set(
+                all(n in self._local_state.selected_names for n in names))
 
     def _get_selected_mods(self):
-        selected = []
-        for mod_name, var in self._checkbox_vars.items():
-            if var.get():
-                for m in self.mods_data:
-                    if m["name"] == mod_name:
-                        selected.append(m)
-                        break
-        return selected
+        names = self._local_state.selected_names
+        return [m for m in self.mods_data if m["name"] in names]
 
     # ============================================================
     # 分组管理
@@ -1756,7 +2890,7 @@ class ModManagerApp:
         finally:
             menu.grab_release()
 
-    def _show_more_menu(self, mod):
+    def _show_more_menu(self, mod, anchor=None):
         name = mod["name"]
         import tkinter as tk
         menu = tk.Menu(self.root, tearoff=0,
@@ -1806,21 +2940,14 @@ class ModManagerApp:
         if current_note:
             menu.add_command(label=t("more_menu.clear_note", "🗑️ 清除备注"), command=lambda: self._clear_note(mod))
 
-        row_info = self._mod_rows.get(name)
-        if row_info:
+        if anchor is not None:
             try:
-                btn_parent = row_info["switch"].master
-                for child in reversed(btn_parent.winfo_children()):
-                    if isinstance(child, ctk.CTkButton):
-                        try:
-                            if child.cget("text") == "⋯":
-                                x = child.winfo_rootx()
-                                y = child.winfo_rooty() + child.winfo_height()
-                                menu.tk_popup(x, y)
-                                menu.grab_release()
-                                return
-                        except Exception:
-                            pass
+                menu.tk_popup(
+                    anchor.winfo_rootx(),
+                    anchor.winfo_rooty() + anchor.winfo_height(),
+                )
+                menu.grab_release()
+                return
             except Exception:
                 pass
 
@@ -1906,7 +3033,7 @@ class ModManagerApp:
                 new_w, new_h = orig_w, orig_h
                 display_img = pil_img
 
-            win = ctk.CTkToplevel(self.root)
+            win = ctk.CTkToplevel(self.root, fg_color="black")
             win.title(t("preview.title", "图片预览 - {name}").format(name=os.path.basename(image_path)))
             win.geometry(f"{new_w}x{new_h}")
             win.resizable(False, False)
@@ -1918,7 +3045,7 @@ class ModManagerApp:
             win.geometry(f"+{x}+{y}")
 
             ctk_img = CTkImage(light_image=display_img, dark_image=display_img, size=(new_w, new_h))
-            img_label = ctk.CTkLabel(win, image=ctk_img, text="")
+            img_label = ctk.CTkLabel(win, image=ctk_img, text="", fg_color="black")
             img_label.image = ctk_img
             img_label.pack(fill="both", expand=True)
 
@@ -1947,9 +3074,7 @@ class ModManagerApp:
             messagebox.showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
-            row_info = self._mod_rows.get(mod["name"])
-            if row_info:
-                row_info["switch_var"].set(mod["enabled"])
+            self._reset_switch_visual(mod["name"], mod["enabled"])
             return
 
         name = mod["name"]
@@ -1961,9 +3086,7 @@ class ModManagerApp:
             t("dialog.title_confirm", "确认操作"),
             t("dialog.toggle_confirm", "确定要{action} Mod \"{name}\" 吗？\n\n这将会移动整个 Mod 文件夹。").format(
                 action=action_display, name=name)):
-            row_info = self._mod_rows.get(name)
-            if row_info:
-                row_info["switch_var"].set(currently_enabled)
+            self._reset_switch_visual(name, currently_enabled)
             return
 
         self.is_operating = True
@@ -2113,8 +3236,14 @@ class ModManagerApp:
         state = "normal" if enabled else "disabled"
         self._browse_btn.configure(state=state)
         self._refresh_btn.configure(state=state)
-        for row_info in self._mod_rows.values():
-            row_info["switch"].configure(state=state)
+        self._settings_btn.configure(state=state)
+        self._more_btn.configure(state=state)
+        self._toolbar_widgets["install_zip"].configure(state=state)
+        for handles in self._mod_rows.values():
+            for row_info in handles:
+                switch = row_info.get("switch")
+                if switch is not None:
+                    switch.configure(state=state)
 
     def _open_mod_folder(self, mod):
         if self.mod_manager:
