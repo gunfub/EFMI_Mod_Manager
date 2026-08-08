@@ -22,11 +22,11 @@
   "about": {
     "button": "ℹ️ About",
     "title": "About",
-    "caption": "Dedicated to that lime-orange summer of 2026 — the color of summer, the taste of memories.",
+    "caption": "Dedicated to that lime-orange summer of 2026 \n— the color of summer, the taste of memories.",
     "section_about": "About this project",
     "app_desc": "EFMI Mod Manager is a Windows PC Mod Manager built with customtkinter. It enables or disables mods by moving mod folders between the Mods and Disabled_Mods directories.",
     "disclaimer": "EFMI Mod Manager does not load, parse, or inject mods. Mod loading is handled by EFMI at game startup; this program is only a graphical frontend that moves mod folders to control which mods are loaded.",
-    "version_label": "Version: 1.9",
+    "version_label": "Version: 2.0",
     "repo_label": "Project: https://github.com/gunfub/EFMI_Mod_Manager",
     "license_label": "License: GPLv3",
     "section_credits": "Open Source Acknowledgments",

@@ -2158,9 +2158,9 @@ class ModManagerApp:
                 "url": "https://github.com/r0x0r/pywebview",
             },
             {
-                "name": "PyInstaller",
+                "name": "PyInstaller (build-time packaging tool)",
                 "version": "6.20.0",
-                "license": "GPL-2.0-or-later (with Bootloader exception)",
+                "license": "\nGPL-2.0-or-later (with Bootloader exception)",
                 "copyright": "Copyright (c) 2010-2023 PyInstaller Development Team\n"
                               "Copyright (c) 2005-2009 Giovanni Bajo",
                 "url": "https://github.com/pyinstaller/pyinstaller",
