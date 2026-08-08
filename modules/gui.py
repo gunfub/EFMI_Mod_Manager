@@ -618,6 +618,7 @@ class ModManagerApp:
     def _switch_page(self, page):
         if page == self._current_page:
             if page == "online":
+                self._online_frame.begin()
                 self._online_frame.reload()
             elif page == "patreon":
                 self._patreon_frame.begin()
@@ -640,6 +641,7 @@ class ModManagerApp:
             self._local_body.pack_forget()
             self._patreon_frame.pack_forget()
             self._online_frame.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
+            self._online_frame.begin()
             self._online_frame.begin_preload()
             self._online_frame.reload()
 
@@ -1085,26 +1087,27 @@ class ModManagerApp:
         self._hide_operation_progress()
         self._set_ui_enabled(True)
         self.is_operating = False
+        source = self._patreon_source
+        self._patreon_source = None
         if error:
             showerror(t("patreon.install_failed", "Patreon 安装失败"), error)
             self._refresh()
             return
-        if not self._patreon_source:
+        if not source:
             self._refresh()
             return
-        campaign_id, post, attachment = self._patreon_source
-        self._patreon_source = None
+        campaign_id, post, attachment = source
         succeeded = [item for item in results if item.success]
         if succeeded:
+            cover_url = post.get("cover_url") or post.get("cover_thumb_url")
             for item in succeeded:
                 try:
                     save_patreon_source(item.target_path, campaign_id, post, attachment)
                 except Exception:
                     pass
-                thumbnail = post.get("thumbnail_url")
-                if thumbnail:
+                if cover_url:
                     self._save_patreon_cover_in_background(
-                        item.target_path, item.target_name, thumbnail)
+                        item.target_path, item.target_name, cover_url)
         self._refresh()
         if succeeded:
             self.status_label.configure(text=t(
@@ -1197,6 +1200,8 @@ class ModManagerApp:
             selections = self._show_zip_candidates_dialog(inspection)
             if selections:
                 self._start_zip_install(inspection, selections)
+            else:
+                self._patreon_source = None
             return
         self._start_loose_install(file_path, post)
 
@@ -1614,6 +1619,8 @@ class ModManagerApp:
 
         selections = self._show_zip_candidates_dialog(inspection)
         if not selections:
+            self._online_source = None
+            self._patreon_source = None
             return
         self._start_zip_install(inspection, selections)
 
@@ -1794,8 +1801,12 @@ class ModManagerApp:
 
         succeeded = [item for item in results if item.success]
         failed = [item for item in results if not item.success]
-        if succeeded and self._online_source:
-            details, remote_file = self._online_source
+        online_source = self._online_source
+        self._online_source = None
+        patreon_source = self._patreon_source
+        self._patreon_source = None
+        if succeeded and online_source:
+            details, remote_file = online_source
             cover_url = details.images[0].url if details.images else None
             for item in succeeded:
                 try:
@@ -1806,20 +1817,18 @@ class ModManagerApp:
                 if cover_url:
                     self._save_cover_in_background(
                         item.target_path, item.target_name, cover_url)
-            self._online_source = None
-        elif succeeded and self._patreon_source:
-            campaign_id, post, attachment = self._patreon_source
-            self._patreon_source = None
-            thumbnail = post.get("thumbnail_url")
+        elif succeeded and patreon_source:
+            campaign_id, post, attachment = patreon_source
+            cover_url = post.get("cover_url") or post.get("cover_thumb_url")
             for item in succeeded:
                 try:
                     save_patreon_source(item.target_path, campaign_id, post, attachment)
                 except Exception as exc:
                     failed.append(type("SourceFailure", (), {
                         "target_name": item.target_name, "error": str(exc)})())
-                if thumbnail:
+                if cover_url:
                     self._save_patreon_cover_in_background(
-                        item.target_path, item.target_name, thumbnail)
+                        item.target_path, item.target_name, cover_url)
         if failed:
             details = "\n".join("{}: {}".format(item.target_name, item.error) for item in failed)
             showwarning(

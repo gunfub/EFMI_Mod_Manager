@@ -2,6 +2,8 @@
 setlocal enabledelayedexpansion
 cd /d "%~dp0"
 
+set "KEEP_SCREENSHOT_COUNT=3"
+
 set "CON_CP="
 for /f "tokens=2 delims=:" %%a in ('chcp') do set "CON_CP=%%a"
 set "CON_CP=!CON_CP: =!"
@@ -26,6 +28,7 @@ if "!USE_CN!"=="1" (
     set "M_REMOVE_RELEASE=正在删除旧 release 文件夹..."
     set "M_RENAME=正在将 dist 改名为 release..."
     set "M_COPY=正在复制附加文件到"
+    set "M_ERR_COPY=错误：复制 README.assets 失败。"
     set "M_DONE=构建完成。"
     set "M_OUT=输出文件夹："
     set "M_ERR_SPEC=错误：未找到 EFMI_Mod_Manager_v*.spec 构建配置文件，搜索目录："
@@ -44,6 +47,7 @@ if "!USE_CN!"=="1" (
     set "M_REMOVE_RELEASE=Removing old release folder..."
     set "M_RENAME=Renaming dist to release..."
     set "M_COPY=Copying assets to"
+    set "M_ERR_COPY=ERROR: Failed to copy README.assets."
     set "M_DONE=Build completed successfully."
     set "M_OUT=Output folder:"
     set "M_ERR_SPEC=ERROR: Could not find EFMI_Mod_Manager_v*.spec, searched in:"
@@ -129,7 +133,16 @@ if exist "locales" (
     xcopy /e /i /y /q "locales" "!APP_DIR!\locales" >nul
 )
 if exist "README.assets" (
-    xcopy /e /i /y /q "README.assets" "!APP_DIR!\README.assets" >nul
+    robocopy "README.assets" "!APP_DIR!\README.assets" /E ^
+        /XF screenshot-*.png ^
+        /NFL /NDL /NJH /NJS /NP
+    if errorlevel 8 (
+        echo [ERROR] !M_ERR_COPY!
+        exit /b 1
+    )
+    for /l %%n in (1,1,!KEEP_SCREENSHOT_COUNT!) do (
+        if exist "README.assets\screenshot-%%n.png" copy /y "README.assets\screenshot-%%n.png" "!APP_DIR!\README.assets\" >nul
+    )
 )
 
 echo [4/4] !M_ZIP! !APP_NAME!

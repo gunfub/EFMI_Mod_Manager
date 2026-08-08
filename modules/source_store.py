@@ -13,6 +13,21 @@ from modules.config import APP_DIR, ConfigManager
 COVER_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
 
 
+def _sniff_image_ext(content):
+    """从图片魔数推断扩展名（Patreon CDN 链接路径无扩展名时使用）。"""
+    if content.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if content.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if content.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if content[:4] == b"RIFF" and content[8:12] == b"WEBP":
+        return ".webp"
+    if content[:2] == b"BM":
+        return ".bmp"
+    return ".jpg"
+
+
 def _load_config():
     return ConfigManager.load()
 
@@ -82,11 +97,13 @@ def save_gamebanana_cover(fetch, cover_url, mod_path, mod_name, overwrite=False)
     _, ext = os.path.splitext(parsed.path)
     ext = ext.lower()
     if ext not in COVER_EXTENSIONS:
-        ext = ".jpg"
+        ext = None
     metadata_dir = os.path.join(mod_path, ".efmi_mod_manager")
-    target = os.path.join(metadata_dir, "cover" + ext)
     os.makedirs(metadata_dir, exist_ok=True)
     content = fetch(cover_url)
+    if ext is None:
+        ext = _sniff_image_ext(content)
+    target = os.path.join(metadata_dir, "cover" + ext)
     temp_path = target + ".tmp"
     try:
         with open(temp_path, "wb") as handle:

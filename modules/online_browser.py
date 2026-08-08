@@ -661,6 +661,11 @@ class OnlineBrowserFrame(ctk.CTkFrame):
                     child["children_loaded"] = True
                 section["children"][category_id] = child
 
+    def begin(self):
+        """进入页面时调用：把共享配置同步到本页开关状态。"""
+        self._hide_sensitive = ConfigManager.get_hide_sensitive_content()
+        self._hide_sensitive_var.set(self._hide_sensitive)
+
     def begin_preload(self):
         """进入在线页时后台预加载分类数据；期间分类按钮置灰显示加载中。
 

@@ -74,18 +74,48 @@ def test_overwrite_replaces_existing_cover(tmp_path, isolated_config):
     assert cover.read_bytes() == b"new"
 
 
-def test_unknown_extension_falls_back_to_jpg(tmp_path, isolated_config):
+def test_unknown_extension_sniffs_content_format(tmp_path, isolated_config):
     mod_path = tmp_path / "Mods" / "MyMod"
     mod_path.mkdir(parents=True)
 
     target = save_gamebanana_cover(
-        FakeFetcher(), "https://images.gamebanana.com/img/ss/mods/123",
+        FakeFetcher(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"),
+        "https://images.patreonusercontent.com/1/abc123",
+        str(mod_path), "MyMod")
+
+    assert target == str(mod_path / ".efmi_mod_manager" / "cover.png")
+    assert (mod_path / ".efmi_mod_manager" / "cover.png").is_file()
+    stored = config.ConfigManager.get_mod_images()["MyMod"]
+    assert stored == ".efmi_mod_manager" + os.sep + "cover.png"
+
+
+@pytest.mark.parametrize("content,expected", [
+    (b"\xff\xd8\xff\xe0jpeg-bytes", ".jpg"),
+    (b"GIF89a\x01\x00\x01\x00", ".gif"),
+    (b"RIFF\x10\x00\x00\x00WEBPVP8 ", ".webp"),
+    (b"BM\x36\x00\x00\x00", ".bmp"),
+])
+def test_sniffs_various_image_formats(tmp_path, isolated_config, content, expected):
+    mod_path = tmp_path / "Mods" / "MyMod"
+    mod_path.mkdir(parents=True)
+
+    target = save_gamebanana_cover(
+        FakeFetcher(content), "https://images.patreonusercontent.com/1/abc123",
+        str(mod_path), "MyMod")
+
+    assert target == str(mod_path / ".efmi_mod_manager" / ("cover" + expected))
+
+
+def test_unknown_extension_unknown_content_falls_back_to_jpg(tmp_path, isolated_config):
+    mod_path = tmp_path / "Mods" / "MyMod"
+    mod_path.mkdir(parents=True)
+
+    target = save_gamebanana_cover(
+        FakeFetcher(b"not-an-image"), "https://images.patreonusercontent.com/1/abc123",
         str(mod_path), "MyMod")
 
     assert target == str(mod_path / ".efmi_mod_manager" / "cover.jpg")
     assert (mod_path / ".efmi_mod_manager" / "cover.jpg").is_file()
-    stored = config.ConfigManager.get_mod_images()["MyMod"]
-    assert stored == ".efmi_mod_manager" + os.sep + "cover.jpg"
 
 
 @pytest.mark.parametrize("extension", [".png", ".jpeg", ".gif", ".webp", ".bmp"])

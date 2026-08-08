@@ -164,6 +164,8 @@ class PatreonBrowserFrame(ctk.CTkFrame):
         self._hidden_creators = {
             str(cid) for cid in ConfigManager.get_patreon_hidden_creators()}
         self._show_hidden_var = ctk.BooleanVar(value=False)
+        self._hide_sensitive = ConfigManager.get_hide_sensitive_content()
+        self._hide_sensitive_var = ctk.BooleanVar(value=self._hide_sensitive)
         self._hide_unentitled = ConfigManager.get_patreon_hide_unentitled()
         self._hide_unentitled_var = ctk.BooleanVar(value=self._hide_unentitled)
         self._build()
@@ -208,7 +210,15 @@ class PatreonBrowserFrame(ctk.CTkFrame):
         row2 = ctk.CTkFrame(controls, fg_color="transparent")
         row2.pack(fill="x", padx=0, pady=(0, 8))
 
-        # 右对齐：隐藏无权限帖子（右）+ 三种显示方式切换（左）
+        # 右对齐（与 GameBanana 同款结构）：隐藏敏感内容（最右）
+        # + 隐藏无权限帖子 + 三种显示方式切换（左）
+        self.hide_sensitive_switch = ctk.CTkSwitch(
+            row2, text=t("online.hide_sensitive", "隐藏敏感内容"),
+            variable=self._hide_sensitive_var,
+            onvalue=True, offvalue=False,
+            command=self._toggle_hide_sensitive)
+        self.hide_sensitive_switch.pack(side="right", padx=(8, 12))
+
         self._hide_unentitled_switch = ctk.CTkSwitch(
             row2, text=t("patreon.hide_unentitled", "隐藏无权限帖子"),
             variable=self._hide_unentitled_var,
@@ -376,6 +386,8 @@ class PatreonBrowserFrame(ctk.CTkFrame):
     # ============================================================
     def begin(self):
         """进入页面时调用：检查登录态，加载已保存的创作者列表。"""
+        self._hide_sensitive = ConfigManager.get_hide_sensitive_content()
+        self._hide_sensitive_var.set(self._hide_sensitive)
         self._creators = [c for c in ConfigManager.get_patreon_creators() if c]
         self._prune_hidden_creators()
         self._render_creators()
@@ -411,6 +423,8 @@ class PatreonBrowserFrame(ctk.CTkFrame):
             text=t("patreon.show_hidden", "显示隐藏创作者"))
         self._hide_unentitled_switch.configure(
             text=t("patreon.hide_unentitled", "隐藏无权限帖子"))
+        self.hide_sensitive_switch.configure(
+            text=t("online.hide_sensitive", "隐藏敏感内容"))
         self._collections_label.configure(
             text=t("patreon.collections_label", "合集"))
         self._update_collections_button()
@@ -606,6 +620,11 @@ class PatreonBrowserFrame(ctk.CTkFrame):
     def _filter_posts(self, posts):
         """按「隐藏无权限帖子」设置过滤帖子列表。"""
         return filter_posts_by_access(posts, self._hide_unentitled)
+
+    def _toggle_hide_sensitive(self):
+        self._hide_sensitive = bool(self._hide_sensitive_var.get())
+        ConfigManager.set_hide_sensitive_content(self._hide_sensitive)
+        self._rerender_posts()
 
     def _toggle_hide_unentitled(self):
         self._hide_unentitled = bool(self._hide_unentitled_var.get())
@@ -1578,7 +1597,7 @@ class PatreonBrowserFrame(ctk.CTkFrame):
 
     def _fetch_image_contain(self, key, url, max_width, max_height):
         """原图按比例缩放到 max_width x max_height 内（不裁剪）。"""
-        from PIL import Image
+        from PIL import Image, ImageFilter
 
         raw_path = self._ensure_raw_image(key, url)
         with Image.open(raw_path) as source:
@@ -1591,6 +1610,8 @@ class PatreonBrowserFrame(ctk.CTkFrame):
                 new_size = (max(1, int(image.width * ratio)),
                             max(1, int(image.height * ratio)))
                 image = image.resize(new_size, Image.LANCZOS)
+            if ConfigManager.get_hide_sensitive_content():
+                image = image.filter(ImageFilter.GaussianBlur(14))
             image.load()
             return image
 
