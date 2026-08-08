@@ -1,5 +1,7 @@
 # EFMI Mod Manager
 
+<div align="center"><img src="./README.assets/酸橙色的纪念.png" height="200" /></div>
+
 [English](README_EN.md) | **中文**
 
 基于 `customtkinter` 的 Mod 管理器，通过移动文件夹的方式来启用/禁用 Mod。主支持 Windows，兼容 Linux 与 macOS。
@@ -39,6 +41,8 @@
 ![](./README.assets/screenshot-2.png)
 
 ![](./README.assets/screenshot-3.png)
+
+[更多截图](./README.assets/more_screenshot.md)
 
 ## 目录结构要求
 

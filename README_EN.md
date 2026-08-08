@@ -1,5 +1,7 @@
 # EFMI Mod Manager
 
+<div align="center"><img src="./README.assets/酸橙色的纪念.png" height="200" /></div>
+
 **English** | [中文](README.md)
 
 A `customtkinter`-based Mod manager that enables/disables Mods by moving folders. Primarily supports Windows, with Linux and macOS compatibility.
@@ -39,6 +41,8 @@ A `customtkinter`-based Mod manager that enables/disables Mods by moving folders
 ![](./README.assets/screenshot-2.png)
 
 ![](./README.assets/screenshot-3.png)
+
+[More Screenshots](./README.assets/more_screenshot.md)
 
 ## Directory Structure Requirements
 
