@@ -16,11 +16,12 @@ from typing import Dict, Optional
 
 import httpx
 
-from modules.config import APP_DIR
+from modules.config import APP_DIR, ConfigManager, get_gb_cache_dir
 
 BUNDLED_PATH = os.path.join(
     APP_DIR, "locales", "category_translations", "gb_category_names.json")
-CACHE_PATH = os.path.join(APP_DIR, "data", "cache", "gb_category_names.json")
+CACHE_PATH = os.path.join(
+    get_gb_cache_dir(), "gb_category_names.json")
 DEFAULT_URL = ("https://raw.githubusercontent.com/gunfub/EFMI_Mod_Manager/"
                "main/locales/category_translations/gb_category_names.json")
 ALLOWED_HOST = "raw.githubusercontent.com"
@@ -62,7 +63,8 @@ class GBCategoryI18n:
         own_client = client is None
         if own_client:
             client = httpx.Client(
-                timeout=TIMEOUT, headers={"User-Agent": "EFMI-Mod-Manager/1.0"})
+                timeout=TIMEOUT, headers={"User-Agent": "EFMI-Mod-Manager/1.0"},
+                proxy=ConfigManager.get_proxy() or None)
         try:
             chunks = []
             size = 0

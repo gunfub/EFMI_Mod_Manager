@@ -214,9 +214,12 @@ def _category_filter(category):
 
 
 class GameBananaClient:
-    def __init__(self, client=None, cache_dir=None, timeout=20.0, cache_ttl=300):
+    def __init__(self, client=None, cache_dir=None, timeout=20.0, cache_ttl=300,
+                 proxy=None):
         self.client = client or httpx.Client(
-            timeout=timeout, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+            timeout=timeout,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+            proxy=proxy)
         self.cache_dir = cache_dir
         self.cache_ttl = cache_ttl
 

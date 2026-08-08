@@ -6,8 +6,10 @@ requires-python = ">=3.8"
 dependencies = [
     "customtkinter>=5.2.0",
     "httpx>=0.28.1",
+    "keyring>=25.5.0",
     "Pillow>=9.0.0",
     "pypinyin>=0.50.0",
+    "pywebview>=6.2.1",
 ]
 
 [dependency-groups]

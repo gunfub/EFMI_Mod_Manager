@@ -40,6 +40,30 @@ def save_gamebanana_source(mod_path, details, remote_file):
     return record
 
 
+def save_patreon_source(mod_path, campaign_id, post, attachment):
+    """记录从 Patreon 安装的 Mod（provider="patreon"）。"""
+    config = _load_config()
+    records = config.setdefault("installed_sources", {})
+    instance_id = str(uuid.uuid4())
+    record = {
+        "instance_id": instance_id, "provider": "patreon",
+        "campaign_id": campaign_id, "post_id": post.get("post_id"),
+        "file_id": attachment.get("file_id") if attachment else None,
+        "folder_name": os.path.basename(mod_path), "path": os.path.abspath(mod_path),
+        "file_name": attachment.get("name") if attachment else None,
+        "post_title": post.get("title"),
+        "source_url": post.get("post_url") or "",
+        "installed_at": int(time.time()),
+    }
+    records[instance_id] = record
+    ConfigManager.save(config)
+    metadata_dir = os.path.join(mod_path, ".efmi_mod_manager")
+    os.makedirs(metadata_dir, exist_ok=True)
+    with open(os.path.join(metadata_dir, "source.json"), "w", encoding="utf-8") as handle:
+        json.dump(record, handle, indent=2, ensure_ascii=False)
+    return record
+
+
 def get_installed_sources():
     return _load_config().get("installed_sources", {})
 

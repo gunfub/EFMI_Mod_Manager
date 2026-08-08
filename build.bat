@@ -121,6 +121,10 @@ copy /y "app.ico" "!APP_DIR!\" >nul
 copy /y "LICENSE" "!APP_DIR!\" >nul
 copy /y "README.md" "!APP_DIR!\" >nul
 copy /y "README_EN.md" "!APP_DIR!\" >nul
+copy /y "THIRD_PARTY_NOTICES.txt" "!APP_DIR!\" >nul
+if exist "licenses" (
+    xcopy /e /i /y /q "licenses" "!APP_DIR!\licenses" >nul
+)
 if exist "locales" (
     xcopy /e /i /y /q "locales" "!APP_DIR!\locales" >nul
 )

@@ -24,7 +24,27 @@ APP_DIR = get_app_dir()
 CONFIG_PATH = os.path.join(APP_DIR, "mod_manager_config.json")
 CONFIG_SCHEMA_VERSION = 1
 VIEW_MODES = ("compact", "card", "detailed")
-VIEW_MODE_DEFAULTS = {"local": "compact", "online": "detailed"}
+VIEW_MODE_DEFAULTS = {"local": "compact", "online": "detailed", "patreon": "detailed"}
+
+
+def get_data_dir():
+    return os.path.join(APP_DIR, "data")
+
+
+def get_patreon_profile_dir():
+    return os.path.join(get_data_dir(), "patreon_profile")
+
+
+def get_patreon_download_dir():
+    return os.path.join(get_data_dir(), "downloads", "patreon")
+
+
+def get_gb_cache_dir():
+    return os.path.join(get_data_dir(), "cache", "gamebanana")
+
+
+def get_gb_download_dir():
+    return os.path.join(get_data_dir(), "downloads", "gamebanana")
 
 README_NAMES = [
     "README.md",
@@ -263,6 +283,75 @@ class ConfigManager:
     def set_hide_sensitive_content(hidden):
         config = ConfigManager.load()
         config["hide_sensitive_content"] = bool(hidden)
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_patreon_creators():
+        """已保存的 Patreon 创作者列表（campaign_id/name/url/avatar_url）。"""
+        value = ConfigManager.load().get("patreon_creators")
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def set_patreon_creators(creators):
+        config = ConfigManager.load()
+        config["patreon_creators"] = list(creators)
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_patreon_hidden_creators():
+        """已屏蔽的 Patreon 创作者 campaign_id 列表。"""
+        value = ConfigManager.load().get("patreon_hidden_creators")
+        return value if isinstance(value, list) else []
+
+    @staticmethod
+    def set_patreon_hidden_creators(ids):
+        config = ConfigManager.load()
+        config["patreon_hidden_creators"] = list(ids)
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_patreon_hide_unentitled():
+        """是否隐藏无权限查看的帖子（未订阅付费内容）。"""
+        value = ConfigManager.load().get("patreon_hide_unentitled")
+        return bool(value) if isinstance(value, bool) else False
+
+    @staticmethod
+    def set_patreon_hide_unentitled(hide):
+        config = ConfigManager.load()
+        config["patreon_hide_unentitled"] = bool(hide)
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_ai_base_url():
+        """AI 翻译服务 base url（OpenAI 兼容）。"""
+        return ConfigManager.load().get("ai_base_url", "")
+
+    @staticmethod
+    def set_ai_base_url(base_url):
+        config = ConfigManager.load()
+        config["ai_base_url"] = (base_url or "").strip()
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_ai_model():
+        """AI 翻译模型名称。"""
+        return ConfigManager.load().get("ai_model", "")
+
+    @staticmethod
+    def set_ai_model(model):
+        config = ConfigManager.load()
+        config["ai_model"] = (model or "").strip()
+        ConfigManager.save(config)
+
+    @staticmethod
+    def get_proxy():
+        """手动代理地址（http/https），空串表示跟随系统代理。"""
+        return ConfigManager.load().get("proxy", "").strip()
+
+    @staticmethod
+    def set_proxy(proxy):
+        config = ConfigManager.load()
+        config["proxy"] = (proxy or "").strip()
         ConfigManager.save(config)
 
     @staticmethod

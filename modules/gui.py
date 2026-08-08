@@ -7,11 +7,15 @@ EFMI Mod Manager - GUI 主界面模块
 import os
 import math
 import re
+import subprocess
 import sys
 import threading
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
-from tkinter import messagebox, filedialog
+from tkinter import filedialog
+from urllib.parse import urlparse
 
+import httpx
 import customtkinter as ctk
 from customtkinter import CTkImage
 
@@ -32,6 +36,27 @@ except ImportError:
     HAS_PYPINYIN = False
 
 from modules.config import APP_DIR, ConfigManager, README_LABELS
+from modules.dialogs import (
+    _apply_dialog_titlebar_color,
+    askyesno,
+    showerror,
+    showinfo,
+    showwarning,
+)
+from modules.config import get_gb_download_dir
+from modules.config import get_patreon_download_dir
+from modules.cleanup import (
+    clean_all,
+    cleanup_targets,
+    format_size,
+    measure_all,
+)
+from modules.ai_translate import (
+    get_ai_api_key,
+    list_models,
+    set_ai_api_key,
+    translate_text,
+)
 from modules.catalog_view import (
     CARD,
     COMPACT,
@@ -50,13 +75,16 @@ from modules.archive_installer import (
     cleanup_target_temporaries,
     format_bytes,
     inspect_zip,
+    install_loose_file,
     install_zip,
     unique_target_name,
     validate_mod_name,
 )
 from modules.gamebanana import GameBananaClient
 from modules.online_browser import OnlineBrowserFrame
+from modules.patreon_browser import PatreonBrowserFrame
 from modules.source_store import save_gamebanana_source, get_installed_sources, save_gamebanana_cover
+from modules.source_store import save_patreon_source
 from modules.update_checker import check_file
 from modules.update_manager import update_from_zip, restore_backup
 from modules.source_store import update_gamebanana_source, restore_source_from_manifest
@@ -64,13 +92,14 @@ from modules.i18n import t, get_i18n
 
 
 def _patch_transient_titlebar_color():
-    """Windows 上调用 transient() 会把标题栏配色重置为浅色。
+    """禁用库的延迟标题栏重绘（transient 后 20ms / resizable 后 10ms）。
 
-    customtkinter 仅在窗口初始化与 resizable() 时重新应用深色标题栏。
-    注意：不能在 transient() 内同步调用 _windows_set_titlebar_color()，
-    它内部会 withdraw 窗口并处理事件，若此时对话框尚未构建完成，随后
-    的 grab_set() 会作用在已 withdrawn 的窗口上，导致 Tk 事件循环卡死。
-    因此与库自身 resizable() 的做法一致，延迟到构建完成后再重新应用。
+    customtkinter 的 _windows_set_titlebar_color() 通过 withdraw+update
+    强制重绘标题栏，其 deiconify 延迟 5ms，在窗口被 grab_set() 之后运行
+    会导致 Tk 事件循环卡死（与 online_browser 同款问题，见
+    online_browser.py:1805）。这里统一设置
+    _deactivate_windows_window_header_manipulation 让这些延迟回调变为
+    空操作；标题栏重绘改由 grab_set() 补丁在 grab 前同步完成。
     """
     if not sys.platform.startswith("win"):
         return
@@ -79,11 +108,7 @@ def _patch_transient_titlebar_color():
     def transient_with_titlebar_color(self, master=None):
         result = original(self, master)
         try:
-            self.after(
-                20,
-                lambda: self._windows_set_titlebar_color(
-                    ctk.get_appearance_mode()),
-            )
+            self._deactivate_windows_window_header_manipulation = True
         except Exception:
             pass
         return result
@@ -91,7 +116,25 @@ def _patch_transient_titlebar_color():
     ctk.CTkToplevel.transient = transient_with_titlebar_color
 
 
+def _patch_grab_set_titlebar_color():
+    """grab_set() 前同步完成标题栏重绘。
+
+    所有对话框都在控件构建完成后才调用 grab_set()，此时窗口尚未被
+    grab，withdraw→update→deiconify 周期安全（不会卡死事件循环），
+    且标题栏深色立即生效。"""
+    if not sys.platform.startswith("win"):
+        return
+    original = ctk.CTkToplevel.grab_set
+
+    def grab_set_with_titlebar(self):
+        _apply_dialog_titlebar_color(self)
+        return original(self)
+
+    ctk.CTkToplevel.grab_set = grab_set_with_titlebar
+
+
 _patch_transient_titlebar_color()
+_patch_grab_set_titlebar_color()
 
 
 class ModManagerApp:
@@ -134,6 +177,7 @@ class ModManagerApp:
         self._current_page = "local"
         self._online_download = None
         self._online_source = None
+        self._patreon_source = None
         self._checking_updates = False
         self._checkbox_vars = {}  # mod_name -> ctk.BooleanVar（该名称最新实例）
         self._group_checkbox_vars = {}  # group_name -> ctk.BooleanVar
@@ -265,6 +309,15 @@ class ModManagerApp:
             command=self._show_mod_settings_menu)
         self._more_btn.pack(side="left", padx=2, pady=5)
 
+        self._about_btn = ctk.CTkButton(
+            menubar, text=t("about.button", "ℹ️ 关于"),
+            width=72, height=26, font=self._font(11),
+            fg_color="transparent", corner_radius=4,
+            hover_color=("gray80", "gray30"),
+            text_color=("gray15", "gray90"),
+            command=self._show_about_dialog)
+        self._about_btn.pack(side="left", padx=(2, 8), pady=5)
+
         # 菜单栏与下方区域的分割线
         menubar_sep = ctk.CTkFrame(self.root, height=1, corner_radius=0,
                                    fg_color=("gray50", "gray30"))
@@ -293,9 +346,13 @@ class ModManagerApp:
             command=lambda: self._switch_page("local"))
         self._local_page_btn.pack(side="left", padx=2, pady=12)
         self._online_page_btn = ctk.CTkButton(
-            top_frame, text=t("top.online_page", "在线 Mods"), width=86, height=30,
+            top_frame, text=t("top.online_page", "GameBanana"), width=86, height=30,
             command=lambda: self._switch_page("online"))
         self._online_page_btn.pack(side="left", padx=2, pady=12)
+        self._patreon_page_btn = ctk.CTkButton(
+            top_frame, text=t("top.patreon_page", "Patreon"), width=86, height=30,
+            command=lambda: self._switch_page("patreon"))
+        self._patreon_page_btn.pack(side="left", padx=2, pady=12)
 
         self.path_label = ctk.CTkLabel(
             top_frame, text=t("top.no_folder", "未选择文件夹"),
@@ -432,6 +489,11 @@ class ModManagerApp:
             self.root, self.root, self._install_online_file)
         self._online_frame.pack_forget()
 
+        self._patreon_frame = PatreonBrowserFrame(
+            self.root, self.root,
+            self._install_patreon_file, self._open_patreon_external)
+        self._patreon_frame.pack_forget()
+
         # ---- 底部状态栏 ----
         self.status_bar = ctk.CTkFrame(self.root, height=28, corner_radius=0,
                                        fg_color=("gray85", "gray20"))
@@ -518,11 +580,13 @@ class ModManagerApp:
         self._title_label.configure(text=t("app.title", "EFMI Mod Manager"))
         self._subtitle_label.configure(text=t("top.subtitle", "|  Mod 管理器"))
         self._local_page_btn.configure(text=t("top.local_page", "本地 Mods"))
-        self._online_page_btn.configure(text=t("top.online_page", "在线 Mods"))
+        self._online_page_btn.configure(text=t("top.online_page", "GameBanana"))
+        self._patreon_page_btn.configure(text=t("top.patreon_page", "Patreon"))
         self._browse_btn.configure(text=t("top.browse", "📁 选择文件夹"))
         self._refresh_btn.configure(text=t("top.refresh", "🔄 刷新"))
         self._settings_btn.configure(text=t("top.settings", "⚙️ 设置") + " ▾")
         self._more_btn.configure(text=t("top.more_mod_settings", "更多 Mod 设置") + " ▾")
+        self._about_btn.configure(text=t("about.button", "ℹ️ 关于"))
 
         tw = self._toolbar_widgets
         tw["select_label"].configure(text=t("toolbar.select", "选择:"))
@@ -544,29 +608,44 @@ class ModManagerApp:
         except Exception:
             pass
 
+        try:
+            self._patreon_frame.apply_language()
+        except Exception:
+            pass
+
         self._refresh()
 
     def _switch_page(self, page):
         if page == self._current_page:
             if page == "online":
                 self._online_frame.reload()
+            elif page == "patreon":
+                self._patreon_frame.begin()
             return
         self._current_page = page
         if page == "local":
             self._online_frame.pack_forget()
+            self._patreon_frame.pack_forget()
             self._local_toolbar.pack(fill="x", padx=0, pady=0, before=self.status_bar)
             self._local_body.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
             self._refresh()
+        elif page == "patreon":
+            self._local_toolbar.pack_forget()
+            self._local_body.pack_forget()
+            self._online_frame.pack_forget()
+            self._patreon_frame.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
+            self._patreon_frame.begin()
         else:
             self._local_toolbar.pack_forget()
             self._local_body.pack_forget()
+            self._patreon_frame.pack_forget()
             self._online_frame.pack(fill="both", expand=True, padx=0, pady=0, before=self.status_bar)
             self._online_frame.begin_preload()
             self._online_frame.reload()
 
     def _check_updates(self):
         if self.is_operating:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
             return
@@ -575,7 +654,7 @@ class ModManagerApp:
         records = [record for record in get_installed_sources().values()
                    if record.get("provider") == "gamebanana"]
         if not records:
-            messagebox.showinfo(
+            showinfo(
                 t("dialog.title_hint", "提示"),
                 t("online.no_managed_mods", "没有找到可检查更新的 GameBanana Mod"))
             return
@@ -583,7 +662,7 @@ class ModManagerApp:
         self.status_label.configure(text=t("online.checking_updates", "正在检查 Mod 更新..."))
 
         def worker():
-            client = GameBananaClient()
+            client = GameBananaClient(proxy=ConfigManager.get_proxy() or None)
             results = []
             try:
                 for record in records:
@@ -617,7 +696,7 @@ class ModManagerApp:
                     os.path.isdir(os.path.join(backup_dir, name)) for name in os.listdir(backup_dir)):
                 available.append(record)
         if not available:
-            messagebox.showinfo(t("dialog.title_hint", "提示"),
+            showinfo(t("dialog.title_hint", "提示"),
                                 t("online.no_backups", "没有可恢复的在线 Mod 备份"))
             return
         dialog = ctk.CTkToplevel(self.root)
@@ -635,7 +714,7 @@ class ModManagerApp:
 
     def _confirm_restore(self, record, dialog):
         dialog.destroy()
-        if not messagebox.askyesno(
+        if not askyesno(
                 t("top.restore_backup", "恢复备份"),
                 t("online.restore_confirm", "恢复 {name} 的上一个版本？当前版本将被移除。").format(
                     name=record.get("folder_name", "-"))):
@@ -643,11 +722,11 @@ class ModManagerApp:
         try:
             restore_backup(record)
             restore_source_from_manifest(record["path"], record["instance_id"])
-            messagebox.showinfo(t("top.restore_backup", "恢复备份"),
+            showinfo(t("top.restore_backup", "恢复备份"),
                                 t("online.restore_success", "已恢复上一个版本"))
             self._refresh()
         except Exception as exc:
-            messagebox.showerror(t("online.update_failed", "更新失败"), str(exc))
+            showerror(t("online.update_failed", "更新失败"), str(exc))
 
     def _show_update_results(self, results):
         self._checking_updates = False
@@ -661,7 +740,7 @@ class ModManagerApp:
         if updates:
             self._show_update_choice(updates)
             return
-        messagebox.showinfo(
+        showinfo(
             t("online.update_result_title", "更新检查结果"),
             t("online.update_result", "检查了 {total} 个 Mod。\n\n{details}").format(
                 total=len(results), details="\n".join(lines) or "全部为最新版本"))
@@ -703,7 +782,7 @@ class ModManagerApp:
 
     def _download_update(self, record, remote_file):
         if not os.path.isdir(record.get("path", "")):
-            messagebox.showerror(
+            showerror(
                 t("online.download_failed", "在线下载失败"),
                 t("online.update_path_missing", "受管 Mod 目录不存在，无法更新"))
             return
@@ -715,7 +794,7 @@ class ModManagerApp:
 
         def worker():
             try:
-                download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
+                download_dir = get_gb_download_dir()
                 os.makedirs(download_dir, exist_ok=True)
                 archive_path = os.path.abspath(os.path.join(
                     download_dir, "gb-update-{}-{}.zip".format(record["submission_id"], remote_file.id)))
@@ -741,15 +820,15 @@ class ModManagerApp:
         self._set_ui_enabled(True)
         self.is_operating = False
         if error:
-            messagebox.showerror(t("online.download_failed", "在线下载失败"), error)
+            showerror(t("online.download_failed", "在线下载失败"), error)
             return
         candidates = inspection.candidates
         if len(candidates) != 1:
-            messagebox.showwarning(
+            showwarning(
                 t("online.update_requires_single_candidate", "更新需要明确的 Mod 候选"),
                 t("online.update_multiple_candidates", "更新 ZIP 包含多个候选，请先使用普通安装流程选择目标"))
             return
-        if not messagebox.askyesno(
+        if not askyesno(
                 t("online.update_confirm_title", "确认更新"),
                 t("online.update_confirm", "将备份并替换 {name}，是否继续？").format(
                     name=record.get("folder_name", "-"))):
@@ -797,12 +876,12 @@ class ModManagerApp:
         self._set_ui_enabled(True)
         self.is_operating = False
         if success:
-            messagebox.showinfo(
+            showinfo(
                 t("online.update_result_title", "更新完成"),
                 t("online.update_success", "更新完成，旧版本已备份。\n\n备份：{path}").format(path=backup))
             self._refresh()
         else:
-            messagebox.showerror(t("online.update_failed", "更新失败"), error)
+            showerror(t("online.update_failed", "更新失败"), error)
 
     def _save_cover_in_background(self, mod_path, mod_name, cover_url):
         def worker():
@@ -821,7 +900,7 @@ class ModManagerApp:
 
     def _install_online_file(self, details, remote_file):
         if self.is_operating:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
             return
@@ -829,14 +908,14 @@ class ModManagerApp:
         manager = ModManager(game_path)
         valid, error, _ = manager.validate()
         if not valid:
-            messagebox.showwarning(t("dialog.title_warning", "提示"), error)
+            showwarning(t("dialog.title_warning", "提示"), error)
             return
         try:
             ConfigManager.ensure_app_dir_writable()
         except OSError as exc:
-            messagebox.showerror(t("dialog.title_error", "错误"), str(exc))
+            showerror(t("dialog.title_error", "错误"), str(exc))
             return
-        if not messagebox.askyesno(
+        if not askyesno(
                 t("online.install_confirm_title", "确认在线安装"),
                 t("online.install_confirm", "下载并安装 {name}？\n\n文件：{file}\n大小：{size}").format(
                     name=details.name, file=remote_file.name,
@@ -852,7 +931,7 @@ class ModManagerApp:
         def worker():
             try:
                 import os
-                download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "downloads")
+                download_dir = get_gb_download_dir()
                 os.makedirs(download_dir, exist_ok=True)
                 safe_name = "gb-{}-{}-download.zip".format(details.id, remote_file.id)
                 archive_path = os.path.abspath(os.path.join(download_dir, safe_name))
@@ -879,12 +958,247 @@ class ModManagerApp:
         self._set_ui_enabled(True)
         self.is_operating = False
         if error:
-            messagebox.showerror(t("online.download_failed", "在线下载失败"), error)
+            showerror(t("online.download_failed", "在线下载失败"), error)
             return
         selections = self._show_zip_candidates_dialog(inspection)
         if selections:
             self._online_source = (details, remote_file)
             self._start_zip_install(inspection, selections)
+
+    # ============================================================
+    # Patreon 下载与安装
+    # ============================================================
+    def _install_patreon_file(self, campaign_id, post, attachment):
+        if self.is_operating:
+            showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
+            return
+        game_path = ConfigManager.get_game_path()
+        manager = ModManager(game_path)
+        valid, error, _ = manager.validate()
+        if not valid:
+            showwarning(t("dialog.title_warning", "提示"), error)
+            return
+        try:
+            ConfigManager.ensure_app_dir_writable()
+        except OSError as exc:
+            showerror(t("dialog.title_error", "错误"), str(exc))
+            return
+        if not askyesno(
+                t("patreon.install_confirm_title", "确认安装 Patreon Mod"),
+                t("patreon.install_confirm",
+                  "下载并安装 {file}？\n\n帖子：{title}").format(
+                    file=attachment.get("name", ""),
+                    title=post.get("title") or "-")):
+            return
+        self.mod_manager = manager
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("patreon.downloading", "正在下载 Patreon 附件..."), cancellable=True)
+
+        def worker():
+            try:
+                session = self._patreon_frame.ensure_session()
+                download_dir = get_patreon_download_dir()
+                os.makedirs(download_dir, exist_ok=True)
+                file_path = session.download_attachment(
+                    attachment["url"], attachment.get("name") or "file",
+                    download_dir,
+                    cancel_event=self._operation_cancel_event,
+                    progress_callback=lambda done, total: self.root.after(
+                        0, self._update_progress,
+                        done / total if total else 0,
+                        t("patreon.download_progress", "正在下载... {done}/{total}").format(
+                            done=format_bytes(done), total=format_bytes(total))))
+                if file_path is None:
+                    self.root.after(0, self._on_patreon_download_ready,
+                                    campaign_id, post, attachment, None, None)
+                    return
+                if zipfile.is_zipfile(file_path):
+                    inspection = inspect_zip(file_path)
+                    self.root.after(0, self._on_patreon_download_ready,
+                                    campaign_id, post, attachment, inspection, file_path)
+                else:
+                    self.root.after(0, self._on_patreon_download_ready,
+                                    campaign_id, post, attachment, None, file_path)
+            except Exception as exc:
+                self.root.after(0, self._on_patreon_download_ready,
+                                campaign_id, post, attachment, None, str(exc))
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_patreon_download_ready(self, campaign_id, post, attachment, inspection, file_path):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if isinstance(file_path, str) and not os.path.isfile(file_path):
+            showerror(t("patreon.download_failed", "Patreon 下载失败"), file_path)
+            return
+        if inspection is not None:
+            selections = self._show_zip_candidates_dialog(inspection)
+            if selections:
+                self._patreon_source = (campaign_id, post, attachment)
+                self._start_zip_install(inspection, selections)
+            return
+        if not file_path:
+            return
+        self._patreon_source = (campaign_id, post, attachment)
+        self._start_loose_install(file_path, post)
+
+    def _start_loose_install(self, file_path, post):
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("patreon.installing", "正在安装独立 Mod 文件夹..."), cancellable=True)
+
+        preferred = post.get("title") or os.path.splitext(os.path.basename(file_path))[0]
+
+        def progress(current, total, name):
+            self.root.after(0, self._update_progress,
+                            current / total if total else 0,
+                            t("patreon.install_progress", "正在安装 {name}...").format(
+                                name=name))
+
+        def worker():
+            try:
+                results = install_loose_file(
+                    file_path, self.mod_manager.mods_dir,
+                    self.mod_manager.disabled_dir, preferred,
+                    progress_callback=progress,
+                    cancel_event=self._operation_cancel_event)
+                self.root.after(0, self._on_patreon_install_complete, [results], None)
+            except Exception as exc:
+                self.root.after(0, self._on_patreon_install_complete, [], str(exc))
+
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_patreon_install_complete(self, results, error):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if error:
+            showerror(t("patreon.install_failed", "Patreon 安装失败"), error)
+            self._refresh()
+            return
+        if not self._patreon_source:
+            self._refresh()
+            return
+        campaign_id, post, attachment = self._patreon_source
+        self._patreon_source = None
+        succeeded = [item for item in results if item.success]
+        if succeeded:
+            for item in succeeded:
+                try:
+                    save_patreon_source(item.target_path, campaign_id, post, attachment)
+                except Exception:
+                    pass
+                thumbnail = post.get("thumbnail_url")
+                if thumbnail:
+                    self._save_patreon_cover_in_background(
+                        item.target_path, item.target_name, thumbnail)
+        self._refresh()
+        if succeeded:
+            self.status_label.configure(text=t(
+                "patreon.install_success", "已从 Patreon 安装 {count} 个 Mod").format(
+                    count=len(succeeded)))
+
+    def _save_patreon_cover_in_background(self, mod_path, mod_name, cover_url):
+        def fetch(url):
+            response = httpx.get(
+                url, timeout=30, follow_redirects=True,
+                headers={"User-Agent": "Mozilla/5.0"},
+                proxy=ConfigManager.get_proxy() or None)
+            response.raise_for_status()
+            return response.content
+
+        def worker():
+            try:
+                save_gamebanana_cover(fetch, cover_url, mod_path, mod_name)
+            except Exception:
+                return
+            try:
+                if not self._closing:
+                    self.root.after(0, self._refresh)
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _open_patreon_external(self, campaign_id, post, url):
+        if self.is_operating:
+            showwarning(
+                t("dialog.operation_in_progress", "操作中"),
+                t("dialog.wait_for_current", "请等待当前操作完成"))
+            return
+        if not askyesno(
+                t("patreon.external_confirm_title", "打开外部下载链接"),
+                t("patreon.external_confirm",
+                  "将在浏览器窗口中打开以下链接，请在窗口中手动完成下载：\n\n{url}\n\n"
+                  "下载完成后文件会被自动捕获。").format(url=url)):
+            return
+        self.is_operating = True
+        self._operation_cancel_event = threading.Event()
+        self._set_ui_enabled(False)
+        self._show_operation_progress(
+            t("patreon.external_waiting", "请在浏览器窗口中完成下载..."), cancellable=True)
+
+        def worker():
+            try:
+                session = self._patreon_frame.ensure_session()
+                file_path = session.open_external(
+                    url, cancel_event=self._operation_cancel_event,
+                    on_message=lambda msg: self.root.after(
+                        0, self._update_progress, 0,
+                        t("patreon.external_waiting", "请在浏览器窗口中完成下载...")))
+                self.root.after(0, self._on_patreon_external_done,
+                                campaign_id, post, file_path)
+            except Exception as exc:
+                self.root.after(0, self._on_patreon_external_done,
+                                campaign_id, post, str(exc))
+
+        self._operation_thread = threading.Thread(target=worker, daemon=True)
+        self._operation_thread.start()
+
+    def _on_patreon_external_done(self, campaign_id, post, file_path):
+        self._operation_thread = None
+        self._operation_cancel_event = None
+        self._hide_operation_progress()
+        self._set_ui_enabled(True)
+        self.is_operating = False
+        if not file_path or not os.path.isfile(file_path):
+            if isinstance(file_path, str):
+                showerror(
+                    t("patreon.external_failed", "外部下载失败"), file_path)
+            return
+        if not askyesno(
+                t("patreon.external_install_title", "安装下载的文件"),
+                t("patreon.external_install_confirm",
+                  "已捕获文件：{name}\n\n是否安装为 Mod？").format(
+                    name=os.path.basename(file_path))):
+            return
+        attachment = {"name": os.path.basename(file_path)}
+        self._patreon_source = (campaign_id, post, attachment)
+        if zipfile.is_zipfile(file_path):
+            try:
+                inspection = inspect_zip(file_path)
+            except Exception as exc:
+                showerror(
+                    t("patreon.install_failed", "Patreon 安装失败"), str(exc))
+                return
+            selections = self._show_zip_candidates_dialog(inspection)
+            if selections:
+                self._start_zip_install(inspection, selections)
+            return
+        self._start_loose_install(file_path, post)
 
     def _view_mode_labels(self):
         return {
@@ -1239,7 +1553,7 @@ class ModManagerApp:
     # ============================================================
     def _install_zip_from_file(self):
         if self.is_operating:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
             return
@@ -1248,12 +1562,12 @@ class ModManagerApp:
         manager = ModManager(game_path)
         valid, error, _ = manager.validate()
         if not valid:
-            messagebox.showwarning(t("dialog.title_warning", "提示"), error)
+            showwarning(t("dialog.title_warning", "提示"), error)
             return
         try:
             ConfigManager.ensure_app_dir_writable()
         except OSError as exc:
-            messagebox.showerror(
+            showerror(
                 t("dialog.title_error", "错误"),
                 t("zip_install.app_dir_readonly",
                   "程序目录不可写，无法创建安装暂存和配置文件。\n\n请将便携版移动到有写入权限的目录后重试。\n\n{error}").format(
@@ -1294,7 +1608,7 @@ class ModManagerApp:
         self._set_ui_enabled(True)
         self.is_operating = False
         if error:
-            messagebox.showerror(
+            showerror(
                 t("zip_install.inspect_failed_title", "ZIP 检查失败"), error)
             return
 
@@ -1389,20 +1703,20 @@ class ModManagerApp:
                 try:
                     validate_mod_name(name)
                 except ArchiveInstallError as exc:
-                    messagebox.showwarning(
+                    showwarning(
                         t("zip_install.invalid_name_title", "文件夹名无效"),
                         "{}: {}".format(candidate.suggested_name, exc),
                         parent=dialog)
                     return
                 key = name.casefold()
                 if key in planned_names:
-                    messagebox.showwarning(
+                    showwarning(
                         t("zip_install.name_conflict_title", "名称冲突"),
                         t("zip_install.name_conflict", "多个候选不能使用同一个目标名称：{name}").format(name=name),
                         parent=dialog)
                     return
                 if unique_target_name(name, roots) != name:
-                    messagebox.showwarning(
+                    showwarning(
                         t("zip_install.name_conflict_title", "名称冲突"),
                         t("zip_install.existing_conflict", "Mods 或 Disabled_Mods 中已存在同名目录：{name}").format(name=name),
                         parent=dialog)
@@ -1414,7 +1728,7 @@ class ModManagerApp:
                     enabled=target_var.get() == enabled_text,
                 ))
             if not selections:
-                messagebox.showinfo(
+                showinfo(
                     t("dialog.title_hint", "提示"),
                     t("zip_install.select_candidate", "请至少选择一个候选 Mod"),
                     parent=dialog)
@@ -1474,7 +1788,7 @@ class ModManagerApp:
         self.is_operating = False
         self._operation_cancel_event = None
         if error:
-            messagebox.showerror(t("zip_install.failed_title", "ZIP 安装失败"), error)
+            showerror(t("zip_install.failed_title", "ZIP 安装失败"), error)
             self._refresh()
             return
 
@@ -1493,9 +1807,22 @@ class ModManagerApp:
                     self._save_cover_in_background(
                         item.target_path, item.target_name, cover_url)
             self._online_source = None
+        elif succeeded and self._patreon_source:
+            campaign_id, post, attachment = self._patreon_source
+            self._patreon_source = None
+            thumbnail = post.get("thumbnail_url")
+            for item in succeeded:
+                try:
+                    save_patreon_source(item.target_path, campaign_id, post, attachment)
+                except Exception as exc:
+                    failed.append(type("SourceFailure", (), {
+                        "target_name": item.target_name, "error": str(exc)})())
+                if thumbnail:
+                    self._save_patreon_cover_in_background(
+                        item.target_path, item.target_name, thumbnail)
         if failed:
             details = "\n".join("{}: {}".format(item.target_name, item.error) for item in failed)
-            messagebox.showwarning(
+            showwarning(
                 t("zip_install.result_title", "ZIP 安装结果"),
                 t("zip_install.partial_result", "成功 {success} 个，失败 {failed} 个。\n\n{details}").format(
                     success=len(succeeded), failed=len(failed), details=details))
@@ -1566,6 +1893,10 @@ class ModManagerApp:
             self._online_frame.destroy()
         except Exception:
             pass
+        try:
+            self._patreon_frame.destroy()
+        except Exception:
+            pass
 
     def _track_background_future(self, future):
         with self._background_futures_lock:
@@ -1619,6 +1950,20 @@ class ModManagerApp:
             label=t("top.browse", "📁 选择文件夹"),
             command=self._browse_folder,
         )
+        menu.add_separator()
+        menu.add_command(
+            label=t("top.cleanup", "🧹 清理缓存"),
+            command=self._show_cleanup_dialog,
+        )
+        menu.add_separator()
+        menu.add_command(
+            label=t("top.ai_settings", "🌐 AI 翻译设置"),
+            command=self._show_ai_settings_dialog,
+        )
+        menu.add_command(
+            label=t("top.proxy_settings", "🛰️ 网络代理设置"),
+            command=self._show_proxy_settings_dialog,
+        )
 
         if anchor is not None:
             try:
@@ -1671,11 +2016,684 @@ class ModManagerApp:
         finally:
             menu.grab_release()
 
+    # ============================================================
+    # 关于对话框（顶栏 → ℹ️ 关于）
+    # ============================================================
+    def _show_about_dialog(self):
+        import webbrowser
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("about.title", "关于"))
+        dialog.geometry("560x640")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        body = ctk.CTkScrollableFrame(dialog, label_text="")
+        body.pack(fill="both", expand=True, padx=18, pady=(16, 4))
+
+        # 纪念图片（路径与配置文件一致：APP_DIR 同时兼容 .py 运行与打包运行）
+        img_path = os.path.join(APP_DIR, "README.assets", "酸橙色的纪念.png")
+        if HAS_PIL and os.path.isfile(img_path):
+            try:
+                pil_img = Image.open(img_path)
+                orig_w, orig_h = pil_img.size
+                target_w = 500
+                new_h = max(1, int(orig_h * (target_w / float(orig_w))))
+                resample = getattr(Image, "LANCZOS", getattr(Image, "ANTIALIAS", Image.BICUBIC))
+                display_img = pil_img.resize((target_w, new_h), resample)
+                ctk_img = CTkImage(
+                    light_image=display_img, dark_image=display_img,
+                    size=(target_w, new_h))
+                img_label = ctk.CTkLabel(body, image=ctk_img, text="")
+                img_label.image = ctk_img
+                img_label.pack(pady=(0, 12))
+            except Exception:
+                pass
+
+        ctk.CTkLabel(
+            body,
+            text=t("about.caption",
+                   "谨以此纪念 2026 年那个酸橙色的夏天——\n酸橙是夏天的颜色，也是记忆的味道。"),
+            wraplength=500, justify="center",
+            font=self._font(13, weight="bold"),
+            text_color=("#B2500B", "#FFB74D"),
+        ).pack(fill="x", pady=(0, 4))
+
+        def divider():
+            ctk.CTkFrame(body, height=1, corner_radius=0,
+                         fg_color=("gray50", "gray30")).pack(fill="x", pady=14)
+
+        divider()
+
+        ctk.CTkLabel(
+            body, text=t("about.section_about", "关于本项目"),
+            font=self._font(14, weight="bold"), anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+
+        def about_line(key, zh_default):
+            ctk.CTkLabel(
+                body, text=t(key, zh_default),
+                wraplength=500, justify="left", anchor="w",
+            ).pack(fill="x", pady=2)
+
+        about_line("about.app_desc",
+                   "EFMI Mod Manager 是一款基于 customtkinter 的 Windows PC Mod 管理器，"
+                   "通过在 Mods 与 Disabled_Mods 目录之间移动文件夹来启用/禁用 Mod。")
+        about_line("about.disclaimer",
+                   "本程序不负责 Mod 的加载、解析或注入，Mod 的加载由 EFMI 在游戏启动时完成；"
+                   "本程序仅提供图形化前端，用于快捷地启用或禁用 Mod。")
+
+        repo_url = "https://github.com/gunfub/EFMI_Mod_Manager"
+        repo_label = ctk.CTkLabel(
+            body,
+            text=t("about.repo_label",
+                   "项目主页：https://github.com/gunfub/EFMI_Mod_Manager"),
+            wraplength=500, justify="left", anchor="w",
+            text_color=("cornflower blue", "#7FB3FF"),
+            cursor="hand2",
+        )
+        repo_label.pack(fill="x", pady=2)
+        repo_label.bind("<Button-1>", lambda e: webbrowser.open(repo_url))
+
+        about_line("about.version_label", "版本：2.0")
+        about_line("about.license_label", "开源许可证：GPLv3")
+
+        divider()
+
+        ctk.CTkLabel(
+            body, text=t("about.section_credits", "感谢开源"),
+            font=self._font(14, weight="bold"), anchor="w",
+        ).pack(fill="x", pady=(0, 6))
+
+        ctk.CTkLabel(
+            body,
+            text=t("about.credits_intro",
+                   "本软件包含以下第三方开源组件（名称、版本、许可证与版权信息）："),
+            wraplength=500, justify="left", anchor="w",
+            text_color="gray",
+        ).pack(fill="x", pady=(0, 6))
+
+        credits = [
+            {
+                "name": "customtkinter",
+                "version": "5.2.2",
+                "license": "MIT License",
+                "copyright": "Copyright (c) 2023 Tom Schimansky",
+                "url": "https://github.com/TomSchimansky/CustomTkinter",
+            },
+            {
+                "name": "Pillow",
+                "version": "10.4.0",
+                "license": "HPND License",
+                "copyright": "Copyright (c) 1995-2011 Fredrik Lundh and contributors\n"
+                              "Copyright (c) 2010-2024 Jeffrey A. Clark and contributors",
+                "url": "https://github.com/python-pillow/Pillow",
+            },
+            {
+                "name": "httpx",
+                "version": "0.28.1",
+                "license": "BSD 3-Clause License",
+                "copyright": "Copyright (c) 2019 Encode OSS Ltd",
+                "url": "https://github.com/encode/httpx",
+            },
+            {
+                "name": "keyring",
+                "version": "25.5.0",
+                "license": "MIT License",
+                "copyright": "Copyright (c) Jason R. Coombs",
+                "url": "https://github.com/jaraco/keyring",
+            },
+            {
+                "name": "pypinyin",
+                "version": "0.55.0",
+                "license": "MIT License",
+                "copyright": "Copyright (c) 2016 mozillazg, 闲耘",
+                "url": "https://github.com/mozillazg/python-pinyin",
+            },
+            {
+                "name": "pywebview",
+                "version": "6.2.1",
+                "license": "BSD 3-Clause License",
+                "copyright": "Copyright (c) 2014-2017 Roman Sirokov",
+                "url": "https://github.com/r0x0r/pywebview",
+            },
+            {
+                "name": "PyInstaller",
+                "version": "6.20.0",
+                "license": "GPL-2.0-or-later (with Bootloader exception)",
+                "copyright": "Copyright (c) 2010-2023 PyInstaller Development Team\n"
+                              "Copyright (c) 2005-2009 Giovanni Bajo",
+                "url": "https://github.com/pyinstaller/pyinstaller",
+            },
+        ]
+        for item in credits:
+            head = ctk.CTkLabel(
+                body,
+                text="{} {} — {}".format(item["name"], item["version"], item["license"]),
+                justify="left", anchor="w",
+                font=self._font(11, weight="bold"),
+                text_color=("cornflower blue", "#7FB3FF"),
+                cursor="hand2",
+            )
+            head.pack(fill="x", pady=(4, 0))
+            head.bind("<Button-1>", lambda e, u=item["url"]: webbrowser.open(u))
+            for line in item["copyright"].split("\n"):
+                ctk.CTkLabel(
+                    body, text=line,
+                    wraplength=500, justify="left", anchor="w",
+                    font=self._font(10),
+                    text_color="gray",
+                ).pack(fill="x", pady=0)
+
+        ctk.CTkLabel(
+            body,
+            text=t("about.credits_footer",
+                   "完整许可证文本随程序分发于 THIRD_PARTY_NOTICES.txt（点击项目名可打开对应仓库）。"),
+            wraplength=500, justify="left", anchor="w",
+            text_color="gray",
+        ).pack(fill="x", pady=(8, 0))
+
+        bottom = ctk.CTkFrame(dialog, fg_color="transparent")
+        bottom.pack(fill="x", padx=18, pady=(4, 14))
+        ctk.CTkButton(
+            bottom, text=t("about.close", "关闭"), width=90,
+            command=dialog.destroy).pack(side="right")
+
+        _apply_dialog_titlebar_color(dialog)
+        dialog.grab_set()
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+        dialog.lift()
+
     def _browse_folder(self):
         path = filedialog.askdirectory(title=t("top.browse", "选择游戏 Mod 文件夹（包含 Mods 和 Disabled_Mods 的目录）"))
         if path:
             ConfigManager.set_game_path(path)
             self._load_config_and_refresh()
+
+    # ============================================================
+    # 缓存清理（设置菜单 → 🧹 清理缓存）
+    # ============================================================
+    def _show_cleanup_dialog(self):
+        import threading
+
+        targets = cleanup_targets()
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("cleanup.title", "清理缓存"))
+        dialog.geometry("560x460")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text=t("cleanup.hint",
+                   "勾选要清理的项目（显示占用空间），点击「清理所选」。\n"
+                   "Patreon 浏览器缓存不影响登录状态。"),
+            wraplength=520, justify="left", text_color="gray",
+        ).pack(fill="x", padx=18, pady=(14, 4))
+
+        rows = ctk.CTkScrollableFrame(dialog, label_text="")
+        rows.pack(fill="both", expand=True, padx=14, pady=4)
+
+        vars_by_key = {}
+        size_labels = {}
+        for target in targets:
+            var = ctk.BooleanVar(value=True)
+            vars_by_key[target["key"]] = var
+            row = ctk.CTkFrame(rows, fg_color="transparent")
+            row.pack(fill="x", pady=2)
+            ctk.CTkCheckBox(
+                row, text=t(target["label_key"], target["key"]),
+                variable=var, onvalue=True, offvalue=False,
+            ).pack(side="left", fill="x", expand=True)
+            size_label = ctk.CTkLabel(
+                row, text="…", text_color="gray", width=90, anchor="e")
+            size_label.pack(side="right", padx=(8, 4))
+            size_labels[target["key"]] = size_label
+
+        bottom = ctk.CTkFrame(dialog, fg_color="transparent")
+        bottom.pack(fill="x", padx=14, pady=(2, 12))
+
+        result_label = ctk.CTkLabel(
+            bottom, text="", text_color="gray", anchor="w")
+        result_label.pack(side="left", fill="x", expand=True)
+
+        def set_all(value):
+            for var in vars_by_key.values():
+                var.set(value)
+
+        select_all = ctk.CTkCheckBox(
+            bottom, text=t("cleanup.select_all", "全选"),
+            onvalue=True, offvalue=False,
+            command=lambda: set_all(select_all.get()))
+        select_all.pack(side="right", padx=(8, 4))
+
+        clean_button = ctk.CTkButton(
+            bottom, text=t("cleanup.clean_selected", "清理所选"), width=110,
+            command=lambda: self._run_cleanup(
+                dialog, targets, vars_by_key, size_labels,
+                result_label, clean_button))
+        clean_button.pack(side="right", padx=(0, 4))
+
+        ctk.CTkButton(
+            bottom, text=t("cleanup.close", "关闭"), width=80,
+            command=dialog.destroy).pack(side="right", padx=(0, 6))
+
+        ctk.CTkLabel(
+            dialog,
+            text=t("cleanup.note",
+                   "缓存用于加速浏览与加载体验，建议仅在需要释放空间时清理，无需频繁清理。"),
+            text_color="gray", font=self._font(10),
+        ).pack(fill="x", padx=18, pady=(0, 12))
+
+        def measure_job():
+            sizes = measure_all(targets)
+
+            def apply_sizes():
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                except Exception:
+                    return
+                dialog._cleanup_sizes = sizes
+                for key, size in sizes.items():
+                    label = size_labels.get(key)
+                    if label is not None:
+                        label.configure(text=format_size(size))
+
+            try:
+                self.root.after(0, apply_sizes)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=measure_job, name="cleanup-measure", daemon=True).start()
+
+    def _run_cleanup(self, dialog, targets, vars_by_key, size_labels,
+                     result_label, clean_button):
+        import threading
+
+        selected = [t for t in targets if vars_by_key[t["key"]].get()]
+        if not selected:
+            showinfo(
+                t("cleanup.title", "清理缓存"),
+                t("cleanup.none_selected", "请先勾选要清理的项目"),
+                parent=dialog)
+            return
+        if self.is_operating and any(
+                t["key"] == "downloads_temp" for t in selected):
+            # 下载进行中：跳过临时残留清理，避免破坏进行中的 .part 文件
+            showwarning(
+                t("cleanup.title", "清理缓存"),
+                t("cleanup.download_in_progress",
+                  "下载进行中，已跳过「下载临时残留」。"),
+                parent=dialog)
+            selected = [t for t in selected if t["key"] != "downloads_temp"]
+            if not selected:
+                return
+        sizes = getattr(dialog, "_cleanup_sizes", {})
+        total = sum(sizes.get(t["key"], 0) for t in selected)
+        if not askyesno(
+                t("cleanup.confirm_title", "确认清理"),
+                t("cleanup.confirm",
+                  "确定清理所选 {count} 项（共 {size}）？").format(
+                    count=len(selected), size=format_size(total)),
+                parent=dialog):
+            return
+
+        clean_button.configure(state="disabled")
+
+        def job():
+            results = clean_all(selected)
+            freed = sum(freed for freed, _failed in results.values())
+            failed = sum(failed for _freed, failed in results.values())
+            new_sizes = measure_all(targets)
+
+            def apply_result():
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                except Exception:
+                    return
+                clean_button.configure(state="normal")
+                dialog._cleanup_sizes = new_sizes
+                for key, size in new_sizes.items():
+                    label = size_labels.get(key)
+                    if label is not None:
+                        label.configure(text=format_size(size))
+                if failed:
+                    result_label.configure(text=t(
+                        "cleanup.partial",
+                        "已清理 {size}（{failed} 个文件被占用跳过）").format(
+                        size=format_size(freed), failed=failed))
+                else:
+                    result_label.configure(text=t(
+                        "cleanup.done", "已清理 {size}").format(
+                        size=format_size(freed)))
+
+            try:
+                self.root.after(0, apply_result)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=job, name="cleanup-job", daemon=True).start()
+
+    # ============================================================
+    # AI 翻译设置（设置菜单 → 🌐 AI 翻译设置）
+    # ============================================================
+    def _show_ai_settings_dialog(self):
+        import threading
+
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("ai.settings_title", "AI 翻译设置"))
+        dialog.geometry("560x420")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text=t("ai.settings_hint",
+                   "使用 OpenAI 兼容接口翻译 GameBanana 详情页描述。\n"
+                   "API key 存入系统凭据管理器，不写入配置文件。"),
+            wraplength=520, justify="left", text_color="gray",
+        ).pack(fill="x", padx=18, pady=(14, 8))
+
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(fill="x", padx=18, pady=4)
+
+        ctk.CTkLabel(
+            form, text=t("ai.base_url", "Base URL"), anchor="w",
+        ).pack(fill="x", pady=(4, 2))
+        base_var = ctk.StringVar(value=ConfigManager.get_ai_base_url())
+        ctk.CTkEntry(
+            form, textvariable=base_var,
+            placeholder_text="https://api.openai.com/v1",
+        ).pack(fill="x")
+
+        ctk.CTkLabel(
+            form, text=t("ai.api_key", "API Key"), anchor="w",
+        ).pack(fill="x", pady=(10, 2))
+        key_var = ctk.StringVar(value=get_ai_api_key())
+        ctk.CTkEntry(
+            form, textvariable=key_var, show="*",
+            placeholder_text="sk-...",
+        ).pack(fill="x")
+
+        model_row = ctk.CTkFrame(form, fg_color="transparent")
+        model_row.pack(fill="x", pady=(10, 2))
+        ctk.CTkLabel(
+            model_row, text=t("ai.model", "模型"), anchor="w",
+        ).pack(side="left")
+        ctk.CTkButton(
+            model_row, text=t("ai.fetch_models", "获取可用模型"),
+            width=120, height=26, font=self._font(11),
+            command=lambda: self._fetch_ai_models(
+                dialog, base_var, key_var, model_var, status_label),
+        ).pack(side="right")
+
+        model_var = ctk.StringVar(value=ConfigManager.get_ai_model())
+        self._ai_model_combo = ctk.CTkComboBox(
+            form, variable=model_var, values=[], height=30)
+        self._ai_model_combo.pack(fill="x")
+
+        status_label = ctk.CTkLabel(
+            dialog, text="", wraplength=520, justify="left",
+            text_color="#e06c75", anchor="w")
+        status_label.pack(fill="x", padx=18, pady=(8, 0))
+
+        bottom = ctk.CTkFrame(dialog, fg_color="transparent")
+        bottom.pack(fill="x", padx=18, pady=(10, 14))
+
+        def save():
+            ConfigManager.set_ai_base_url(base_var.get())
+            ConfigManager.set_ai_model(model_var.get())
+            set_ai_api_key(key_var.get())
+            dialog.destroy()
+
+        ctk.CTkButton(
+            bottom, text=t("ai.save", "保存"), width=100,
+            command=save).pack(side="right")
+        ctk.CTkButton(
+            bottom, text=t("ai.cancel", "取消"), width=100,
+            fg_color="transparent", border_width=1,
+            command=dialog.destroy).pack(side="right", padx=(0, 8))
+
+    def _fetch_ai_models(self, dialog, base_var, key_var, model_var,
+                         status_label):
+        import threading
+
+        base = base_var.get().strip()
+        key = key_var.get().strip()
+        if not base or not key:
+            status_label.configure(text=t(
+                "ai.fetch_models_need_config",
+                "请先填写 Base URL 和 API Key"))
+            return
+        status_label.configure(text=t(
+            "ai.fetching_models", "正在获取可用模型..."))
+
+        def job():
+            try:
+                models = list_models(base, key)
+            except Exception as exc:
+                models = None
+                message = str(exc)
+            else:
+                message = ""
+
+            def apply():
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                except Exception:
+                    return
+                if models is None:
+                    status_label.configure(text=message)
+                    return
+                current = model_var.get()
+                self._ai_model_combo.configure(values=models)
+                if current in models:
+                    model_var.set(current)
+                elif models:
+                    model_var.set(models[0])
+                status_label.configure(
+                    text=t("ai.fetch_models_ok",
+                           "获取到 {count} 个可用模型").format(count=len(models)),
+                    text_color=("gray40", "gray60"))
+
+            try:
+                self.root.after(0, apply)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=job, name="ai-fetch-models", daemon=True).start()
+
+    # ============================================================
+    # 网络代理设置（设置菜单 → 🛰️ 网络代理设置）
+    # ============================================================
+    def _show_proxy_settings_dialog(self):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("proxy.settings_title", "网络代理设置"))
+        dialog.geometry("560x380")
+        dialog.transient(self.root)
+
+        ctk.CTkLabel(
+            dialog,
+            text=t("proxy.hint",
+                   "为所有网络请求（GameBanana/Patreon/AI 翻译等）设置代理。\n"
+                   "留空 = 跟随系统代理；仅支持 http/https。\n"
+                   "代理含账号密码时，Patreon 浏览器仍走系统代理。"),
+            wraplength=520, justify="left", text_color="gray",
+        ).pack(fill="x", padx=18, pady=(14, 8))
+
+        form = ctk.CTkFrame(dialog, fg_color="transparent")
+        form.pack(fill="x", padx=18, pady=4)
+
+        ctk.CTkLabel(
+            form, text=t("proxy.url_label", "代理地址"), anchor="w",
+        ).pack(fill="x", pady=(4, 2))
+        proxy_var = ctk.StringVar(value=ConfigManager.get_proxy())
+        ctk.CTkEntry(
+            form, textvariable=proxy_var,
+            placeholder_text="http://127.0.0.1:7897",
+        ).pack(fill="x")
+
+        status_label = ctk.CTkLabel(
+            dialog, text="", wraplength=520, justify="left",
+            text_color="#e06c75", anchor="w")
+        status_label.pack(fill="x", padx=18, pady=(8, 0))
+
+        row = ctk.CTkFrame(form, fg_color="transparent")
+        row.pack(fill="x", pady=(10, 2))
+        ctk.CTkLabel(
+            row, text=t("proxy.scope_hint", "生效范围：全部网络请求 + Patreon 浏览器"),
+            anchor="w", text_color=("gray40", "gray60"),
+        ).pack(side="left")
+        test_btn = ctk.CTkButton(
+            row, text=t("proxy.test_connection", "测试连接"),
+            width=110, height=26, font=self._font(11),
+            command=lambda: self._test_proxy_connection(
+                dialog, proxy_var, status_label, test_btn))
+        test_btn.pack(side="right")
+
+        bottom = ctk.CTkFrame(dialog, fg_color="transparent")
+        bottom.pack(fill="x", padx=18, pady=(10, 14))
+
+        def save():
+            proxy = proxy_var.get().strip()
+            if proxy:
+                if "://" not in proxy:
+                    proxy = "http://" + proxy
+                parsed = urlparse(proxy)
+                if parsed.scheme not in ("http", "https"):
+                    status_label.configure(
+                        text=t("proxy.socks_not_supported",
+                               "仅支持 http/https 代理"),
+                        text_color="#e06c75")
+                    return
+                try:
+                    valid = bool(parsed.hostname and parsed.port)
+                except ValueError:
+                    valid = False
+                if not valid:
+                    status_label.configure(
+                        text=t("proxy.invalid_url", "代理地址格式不正确"),
+                        text_color="#e06c75")
+                    return
+            ConfigManager.set_proxy(proxy)
+            dialog.destroy()
+            # 延迟到旧对话框销毁、grab 释放处理完成后再弹确认框，避免
+            # 新窗口在未映射时 grab_set 造成事件循环卡死
+            self.root.after(150, self._confirm_proxy_restart)
+
+        ctk.CTkButton(
+            bottom, text=t("proxy.save", "保存"), width=100,
+            command=save).pack(side="right")
+        ctk.CTkButton(
+            bottom, text=t("proxy.cancel", "取消"), width=100,
+            fg_color="transparent", border_width=1,
+            command=dialog.destroy).pack(side="right", padx=(0, 8))
+
+        dialog.grab_set()
+
+    def _test_proxy_connection(self, dialog, proxy_var, status_label, test_btn):
+        proxy = proxy_var.get().strip()
+        if proxy and "://" not in proxy:
+            proxy = "http://" + proxy
+        proxy = proxy or None
+        test_btn.configure(state="disabled")
+        status_label.configure(
+            text=t("proxy.testing", "正在测试连接..."), text_color="gray")
+
+        def job():
+            try:
+                response = httpx.get(
+                    "https://www.google.com/generate_204",
+                    proxy=proxy, timeout=10, follow_redirects=True)
+                ok = response.status_code < 400
+                message = (t("proxy.test_ok", "连接成功") if ok
+                           else t("proxy.test_fail", "连接失败：HTTP {code}").format(
+                               code=response.status_code))
+            except Exception as exc:
+                ok = False
+                message = t("proxy.test_fail", "连接失败：{error}").format(
+                    error=exc)
+
+            def apply():
+                try:
+                    if not dialog.winfo_exists():
+                        return
+                except Exception:
+                    return
+                test_btn.configure(state="normal")
+                status_label.configure(
+                    text=message,
+                    text_color=("green", "light green") if ok else "#e06c75")
+
+            try:
+                self.root.after(0, apply)
+            except Exception:
+                pass
+
+        threading.Thread(
+            target=job, name="proxy-test", daemon=True).start()
+
+    def _confirm_proxy_restart(self):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title(t("proxy.restart_title", "代理设置已保存"))
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+
+        ctk.CTkLabel(
+            dialog,
+            text=t("proxy.restart_msg", "代理设置已保存，重启后生效。\n是否立即重启？"),
+        ).pack(padx=24, pady=(24, 16))
+
+        btn_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=24, pady=(0, 20))
+
+        ctk.CTkButton(
+            btn_frame, text=t("proxy.restart_now", "立即重启"),
+            command=self._restart_app,
+        ).pack(side="left", expand=True, fill="x", padx=(0, 5))
+        ctk.CTkButton(
+            btn_frame, text=t("proxy.later", "稍后"),
+            fg_color="transparent", border_width=1,
+            command=dialog.destroy,
+        ).pack(side="right", expand=True, fill="x", padx=(5, 0))
+
+        dialog.bind("<Escape>", lambda e: dialog.destroy())
+
+        dialog.update_idletasks()
+        dw = dialog.winfo_width()
+        dh = dialog.winfo_height()
+        px = self.root.winfo_rootx()
+        py = self.root.winfo_rooty()
+        pw = self.root.winfo_width()
+        ph = self.root.winfo_height()
+        x = max(0, px + (pw - dw) // 2)
+        y = max(0, py + (ph - dh) // 2)
+        dialog.geometry("+{}+{}".format(x, y))
+
+        dialog.grab_set()
+
+    def _restart_app(self):
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable] + sys.argv[1:]
+        else:
+            cmd = [sys.executable] + sys.argv
+        try:
+            subprocess.Popen(cmd)
+        except Exception:
+            return
+        try:
+            self._patreon_frame.destroy()
+        except Exception:
+            pass
+        os._exit(0)
 
     def _load_config_and_refresh(self, defer=False):
         game_path = ConfigManager.get_game_path()
@@ -1723,7 +2741,7 @@ class ModManagerApp:
         self._rebuild_alphabet_bar()
 
         if created_disabled:
-            self.root.after(100, lambda: messagebox.showinfo(
+            self.root.after(100, lambda: showinfo(
                 t("dialog.title_hint", "提示"),
                 t("dialog.disabled_dir_created", "检测到游戏目录中没有 Disabled_Mods 文件夹，已自动创建。\n\n"
                   "路径: {path}").format(path=self.mod_manager.disabled_dir)
@@ -2685,7 +3703,7 @@ class ModManagerApp:
             groups = ConfigManager.get_mod_groups()
             order = ConfigManager.get_group_order()
             if gname in groups:
-                messagebox.showwarning(
+                showwarning(
                     t("group_dialog.already_exists", "已存在"),
                     t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=gname))
                 return
@@ -2706,7 +3724,7 @@ class ModManagerApp:
         groups, order, all_groups = _get_ordered()
 
         if not all_groups:
-            messagebox.showinfo(
+            showinfo(
                 t("dialog.title_hint", "提示"),
                 t("group_dialog.hint_no_groups", "当前没有任何分组，请先新建分组。"))
             return
@@ -2796,7 +3814,7 @@ class ModManagerApp:
         def rename_group():
             gname = selected_group[0]
             if not gname:
-                messagebox.showwarning(
+                showwarning(
                     t("dialog.title_warning", "提示"),
                     t("group_dialog.select_first", "请先选择一个分组"))
                 return
@@ -2806,7 +3824,7 @@ class ModManagerApp:
             if new_name and new_name.strip() and new_name.strip() != gname:
                 nn = new_name.strip()
                 if nn in groups:
-                    messagebox.showwarning(
+                    showwarning(
                         t("group_dialog.already_exists", "已存在"),
                         t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=nn))
                     return
@@ -2821,7 +3839,7 @@ class ModManagerApp:
             gname = selected_group[0]
             if not gname:
                 return
-            if messagebox.askyesno(
+            if askyesno(
                 t("group_dialog.title_delete_confirm", "确认删除"),
                 t("group_dialog.msg_delete_confirm", "确定要删除分组 \"{name}\" 吗？\n（Mod 不会被删除，只是移除分组）").format(name=gname)):
                 groups.pop(gname, None)
@@ -2838,7 +3856,7 @@ class ModManagerApp:
             if result and result.strip():
                 gname = result.strip()
                 if gname in groups:
-                    messagebox.showwarning(
+                    showwarning(
                         t("group_dialog.already_exists", "已存在"),
                         t("group_dialog.already_exists_msg", "分组 \"{name}\" 已存在").format(name=gname))
                     return
@@ -2986,7 +4004,7 @@ class ModManagerApp:
 
     def _set_preview_image(self, mod):
         if not HAS_PIL:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.title_warning", "缺少依赖"),
                 t("preview_dialog.missing_dep", "预览图功能需要 Pillow 库。\n\n请运行: pip install Pillow"))
             return
@@ -3071,7 +4089,7 @@ class ModManagerApp:
 
     def _toggle_mod_threaded(self, mod):
         if self.is_operating:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
             self._reset_switch_visual(mod["name"], mod["enabled"])
@@ -3082,7 +4100,7 @@ class ModManagerApp:
         action_key = "disable" if currently_enabled else "enable"
         action_display = t("dialog.action_disable", "禁用") if currently_enabled else t("dialog.action_enable", "启用")
 
-        if not messagebox.askyesno(
+        if not askyesno(
             t("dialog.title_confirm", "确认操作"),
             t("dialog.toggle_confirm", "确定要{action} Mod \"{name}\" 吗？\n\n这将会移动整个 Mod 文件夹。").format(
                 action=action_display, name=name)):
@@ -3117,14 +4135,14 @@ class ModManagerApp:
     # ============================================================
     def _batch_toggle(self, enable):
         if self.is_operating:
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.operation_in_progress", "操作中"),
                 t("dialog.wait_for_current", "请等待当前操作完成"))
             return
 
         selected = self._get_selected_mods()
         if not selected:
-            messagebox.showinfo(
+            showinfo(
                 t("dialog.title_hint", "提示"),
                 t("dialog.select_mods_first", "请先勾选要操作的 Mod"))
             return
@@ -3138,14 +4156,14 @@ class ModManagerApp:
         if already > 0:
             skip_msg = "\n" + t("dialog.batch_skip", "（{count} 个已处于目标状态，将跳过）").format(count=already)
 
-        if not messagebox.askyesno(
+        if not askyesno(
             t("dialog.title_confirm", "确认批量操作"),
             t("dialog.batch_confirm", "确定要批量{action} {count} 个 Mod 吗？{skip}\n\n这将会移动 Mod 文件夹。").format(
                 action=action_display, count=len(to_toggle), skip=skip_msg)):
             return
 
         if not to_toggle:
-            messagebox.showinfo(
+            showinfo(
                 t("dialog.title_hint", "提示"),
                 t("dialog.already_target_state", "所选 Mod 均已处于目标状态"))
             return
@@ -3193,7 +4211,7 @@ class ModManagerApp:
         if fail > 0:
             failed_list = [f"  - {name}: {err}" for name, ok, err in results if not ok]
             detail = "\n".join(failed_list[:8])
-            messagebox.showwarning(
+            showwarning(
                 t("dialog.batch_result_title", "批量操作结果"),
                 t("dialog.batch_result_fail", "批量{action}完成：成功 {success} 个，失败 {fail} 个\n\n{detail}").format(
                     action=action_display, success=success, fail=fail, detail=detail))
@@ -3224,7 +4242,7 @@ class ModManagerApp:
             self._refresh()
         else:
             action_display = t("dialog.action_enable", "启用") if action_key == "enable" else t("dialog.action_disable", "禁用")
-            messagebox.showerror(
+            showerror(
                 t("dialog.operation_failed", "操作失败"),
                 t("dialog.cannot_toggle", "无法{action} Mod \"{name}\":\n{error}").format(
                     action=action_display, name=name, error=error_msg))

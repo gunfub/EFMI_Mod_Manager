@@ -1,0 +1,69 @@
+EFMI Mod Manager - Third-Party Notices
+======================================
+
+This software includes the following third-party open source components.
+Full license texts are distributed with this program in the `licenses/`
+directory, and the complete list of notices is maintained in this file.
+
+本软件包含以下第三方开源组件。完整许可证文本随程序分发于 `licenses/` 目录。
+
+----------------------------------------------------------------------
+
+1. customtkinter 5.2.2
+   License: MIT License
+   Copyright (c) 2023 Tom Schimansky
+   Project: https://github.com/TomSchimansky/CustomTkinter
+   License text: licenses/customtkinter-LICENSE.txt
+
+2. Pillow 10.4.0 (Python Imaging Library, fork of PIL)
+   License: HPND License (Pillow License)
+   Copyright (c) 1995-2011 Fredrik Lundh and contributors
+   Copyright (c) 2010-2024 Jeffrey A. Clark and contributors
+   Project: https://github.com/python-pillow/Pillow
+   License text: licenses/pillow-LICENSE.txt
+   (Includes the license texts of the bundled third-party C libraries:
+    FreeType, HarfBuzz, lcms2, libjpeg-turbo, libwebp, libpng, OpenJPEG,
+    libtiff, XZ Utils, zlib.)
+
+3. httpx 0.28.1
+   License: BSD 3-Clause License
+   Copyright (c) 2019 Encode OSS Ltd
+   Project: https://github.com/encode/httpx
+   License text: licenses/httpx-LICENSE.txt
+
+4. keyring 25.5.0
+   License: MIT License
+   Copyright (c) Jason R. Coombs (jaraco)
+   Project: https://github.com/jaraco/keyring
+   License text: licenses/keyring-LICENSE.txt
+
+5. pypinyin 0.55.0
+   License: MIT License
+   Copyright (c) 2016 mozillazg, 闲耘
+   Project: https://github.com/mozillazg/python-pinyin
+   License text: licenses/pypinyin-LICENSE.txt
+
+6. pywebview 6.2.1
+   License: BSD 3-Clause License
+   Copyright (c) 2014-2017 Roman Sirokov
+   Project: https://github.com/r0x0r/pywebview
+   License text: licenses/pywebview-LICENSE.txt
+
+7. PyInstaller 6.20.0 (build-time packaging tool)
+   License: GPL-2.0-or-later WITH Bootloader-exception
+   Copyright (c) 2010-2023 PyInstaller Development Team
+   Copyright (c) 2005-2009 Giovanni Bajo
+   Project: https://github.com/pyinstaller/pyinstaller
+   License text: licenses/pyinstaller-COPYING.txt
+
+8. Python 3.8.20 runtime (bundled by PyInstaller)
+   License: Python Software Foundation License Version 2
+            (also includes BeOpen, CNRI and CWI license agreements)
+   Copyright (c) 2001-2023 Python Software Foundation; All Rights Reserved
+   Project: https://www.python.org
+   License text: licenses/python-PSF-LICENSE.txt
+
+----------------------------------------------------------------------
+
+EFMI Mod Manager itself is licensed under the GPLv3 license;
+see the LICENSE file in the program directory.

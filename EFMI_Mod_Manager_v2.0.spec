@@ -1,12 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+# keyring 通过包内后端插件发现（Windows 凭据管理器），需完整打包
+from PyInstaller.utils.hooks import collect_all
+
+_keyring_datas, _keyring_binaries, _keyring_hidden = collect_all('keyring')
 
 a = Analysis(
     ['mod_manager.py'],
     pathex=[],
-    binaries=[],
-    datas=[],
-    hiddenimports=[],
+    binaries=[] + _keyring_binaries,
+    datas=[] + _keyring_datas,
+    hiddenimports=[] + _keyring_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -21,7 +25,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='EFMI_Mod_Manager_v1.8',
+    name='EFMI_Mod_Manager_v2.0',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -41,5 +45,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='EFMI_Mod_Manager_v1.8',
+    name='EFMI_Mod_Manager_v2.0',
 )

@@ -11,7 +11,7 @@ from io import BytesIO
 from threading import Lock
 
 import customtkinter as ctk
-from tkinter import messagebox
+from modules.dialogs import askyesno, showerror, showinfo
 
 from modules.catalog_view import (
     CARD,
@@ -24,7 +24,8 @@ from modules.catalog_view import (
     normalize_view_mode,
     remote_image_cache_key,
 )
-from modules.config import APP_DIR, ConfigManager
+from modules.config import ConfigManager, get_gb_cache_dir
+from modules.ai_translate import get_ai_api_key, translate_text
 from modules.gamebanana import (
     ALLOWED_MODELS,
     GameBananaClient,
@@ -36,7 +37,7 @@ from modules.i18n import get_i18n, t
 
 
 DETAILED_PREVIEW = (150, 84)
-COMPACT_PREVIEW = (80, 45)
+COMPACT_PREVIEW = (85, 48)
 # 与本地卡片同一规格：宽 256、间距 4、16:9 预览。
 CARD_WIDTH = 256
 CARD_GAP = 4
@@ -121,7 +122,8 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         self.root = root
         self.on_install = on_install
         self.client = GameBananaClient(
-            cache_dir=os.path.join(APP_DIR, "data", "cache"))
+            cache_dir=get_gb_cache_dir(),
+            proxy=ConfigManager.get_proxy() or None)
         self.state = OnlineCatalogState(
             view_mode=normalize_view_mode(
                 ConfigManager.get_view_mode("online"), default=DETAILED))
@@ -204,14 +206,13 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         self.search_button.pack(side="left", padx=4)
 
         self._sort_labels = {
-            "popular": t("online.popular", "热门"),
-            "recent": t("online.recent", "最近更新"),
+            "popular": t("online.popular", "🔥 热门"),
+            "recent": t("online.recent", "🕐 最新"),
         }
-        self.sort_button = ctk.CTkButton(
-            row1, text=self._sort_button_text(),
-            width=110,
-            command=self._show_sort_menu,
+        self.sort_button = ctk.CTkSegmentedButton(
+            row1, width=170, command=self._sort_changed,
         )
+        self._update_sort_button_labels()
         self.sort_button.pack(side="left", padx=6)
 
         ctk.CTkLabel(
@@ -273,38 +274,12 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         self._more_button_state()
         self._card_watch_job = self.root.after(150, self._watch_card_area)
 
-    def _sort_button_text(self):
-        """排序按钮文案：当前排序标签 + 下拉提示标识。"""
-        label = self._sort_labels.get(
-            self.state.sort,
-            self._sort_labels.get("popular", ""))
-        return label + "  ▾"
-
-    def _show_sort_menu(self, anchor=None):
-        import tkinter as tk
-
-        menu = tk.Menu(
-            self.root, tearoff=0,
-            bg="#2b2b2b", fg="#e0e0e0",
-            activebackground="#3B8ED0", activeforeground="white",
-            font=("Microsoft YaHei UI", max(8, int(11 * self._dpi_scale))),
-            bd=1, relief="flat",
-        )
-        for key, label in self._sort_labels.items():
-            current = "✓ " if self.state.sort == key else "  "
-            menu.add_command(
-                label=f"  {current}{label}",
-                command=lambda v=label: self._sort_changed(v),
-            )
-
-        try:
-            menu.tk_popup(
-                self.sort_button.winfo_rootx(),
-                self.sort_button.winfo_rooty()
-                + self.sort_button.winfo_height(),
-            )
-        finally:
-            menu.grab_release()
+    def _update_sort_button_labels(self):
+        """分段切换按钮：最新/热门，与 Patreon 页同一套 UI。"""
+        labels = self._sort_labels
+        self.sort_button.configure(
+            values=[labels["recent"], labels["popular"]])
+        self.sort_button.set(labels[self.state.sort])
 
     def _category_button_text(self):
         """分类按钮文案：当前选择面包屑 + 下拉提示标识。"""
@@ -329,10 +304,10 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         self.hide_sensitive_switch.configure(
             text=t("online.hide_sensitive", "隐藏敏感内容"))
         self._sort_labels = {
-            "popular": t("online.popular", "热门"),
-            "recent": t("online.recent", "最近更新"),
+            "popular": t("online.popular", "🔥 热门"),
+            "recent": t("online.recent", "🕐 最新"),
         }
-        self.sort_button.configure(text=self._sort_button_text())
+        self._update_sort_button_labels()
         self.update_labels_button.configure(
             text=t("online.update_category_labels", "更新分类翻译"))
         self._rebuild_category_ui()
@@ -353,13 +328,12 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         ConfigManager.set_hide_sensitive_content(self._hide_sensitive)
         self._rerender()
 
-    def _sort_changed(self, value):
+    def _sort_changed(self, selected_label):
         by_label = {label: key for key, label in self._sort_labels.items()}
-        sort = by_label.get(value, self.state.sort)
+        sort = by_label.get(selected_label, self.state.sort)
         if sort == self.state.sort:
             return
         self.state.sort = sort
-        self.sort_button.configure(text=self._sort_button_text())
         self.reload()
 
     # ============================================================
@@ -1463,7 +1437,7 @@ class OnlineBrowserFrame(ctk.CTkFrame):
             return
         item = self.state.item_by_id.get(item_id)
         if self._hide_sensitive and item is not None and is_sensitive(item):
-            if not messagebox.askyesno(
+            if not askyesno(
                     t("online.sensitive_title", "敏感内容确认"),
                     t("online.sensitive_confirm", "此 Mod 可能包含敏感内容，继续查看详情？"),
                     parent=self.root):
@@ -1513,27 +1487,45 @@ class OnlineBrowserFrame(ctk.CTkFrame):
                 text=t("online.author", "作者：{name}").format(name=details.author.name),
                 anchor="w", text_color="gray",
             ).pack(fill="x")
+        description_text = details.description or ""
+        desc_section = ctk.CTkFrame(body, fg_color="transparent")
+        desc_section.pack(fill="x", pady=10)
         ctk.CTkLabel(
-            body, text=details.description or t("online.no_description", "没有描述"),
+            desc_section,
+            text=description_text or t("online.no_description", "没有描述"),
             anchor="w", justify="left", wraplength=690,
-        ).pack(fill="x", pady=10)
+        ).pack(fill="x")
+        if description_text.strip():
+            desc_actions = ctk.CTkFrame(desc_section, fg_color="transparent")
+            desc_actions.pack(anchor="w", pady=(6, 0))
+            translate_btn = ctk.CTkButton(
+                desc_actions, text=t("ai.translate", "🌐 翻译"),
+                width=90, height=26, font=ctk.CTkFont(size=11),
+                command=lambda: self._translate_description(
+                    dialog, desc_section, translate_btn, description_text))
+            translate_btn.pack(side="left")
         if details.images:
             gallery = ctk.CTkScrollableFrame(
                 body, label_text=t("online.screenshots", "截图预览"),
-                orientation="horizontal", height=135, fg_color="black")
+                orientation="horizontal", height=220,
+                fg_color=("gray95", "gray17"))
             gallery.pack(fill="x", pady=8)
             blur = blur_thumbnail(self._hide_sensitive, details)
             for index, remote_image in enumerate(details.images):
                 preview = ctk.CTkLabel(
-                    gallery, text=t("online.preview", "预览"),
-                    width=180, height=102)
+                    gallery,
+                    text=t("online.loading_image", "正在加载..."),
+                    text_color="gray",
+                    width=300, height=200,
+                    fg_color=("gray90", "gray18"), corner_radius=6)
                 preview.pack(side="left", padx=4, pady=4)
                 preview.bind(
                     "<Button-1>",
                     lambda _event, url=remote_image.url, name=details.name,
                     parent=dialog: self._show_full_image(url, name, parent))
+                # 原图等比缩放显示（不裁剪），与 Patreon 详情页同一套表现
                 self._load_image(
-                    remote_image.thumbnail_url, (180, 102), blur,
+                    remote_image.url, (300, 200), blur,
                     preview, ("dialog", id(preview)), fit=False)
         if details.unavailable_reason:
             ctk.CTkLabel(
@@ -1572,6 +1564,70 @@ class OnlineBrowserFrame(ctk.CTkFrame):
         if not self.state.loading:
             self.status.configure(text=t("online.ready", "搜索或浏览 GameBanana"))
 
+    # ============================================================
+    # 描述 AI 翻译（译文显示在原文下方，不替换、不持久化）
+    # ============================================================
+    def _translate_description(self, dialog, section, button, text):
+        base = ConfigManager.get_ai_base_url()
+        api_key = get_ai_api_key()
+        if not base or not api_key:
+            showinfo(
+                t("ai.translate_title", "AI 翻译"),
+                t("ai.not_configured",
+                  "请先在「设置 → AI 翻译设置」中填写 Base URL 与 API Key"),
+                parent=dialog)
+            return
+        target = get_i18n().effective_lang
+        button.configure(
+            state="disabled", text=t("ai.translating", "翻译中..."))
+        status_label = ctk.CTkLabel(
+            section, text=t("ai.translating", "翻译中..."),
+            text_color="gray", justify="left", wraplength=690, anchor="w")
+        status_label.pack(fill="x", pady=(6, 0))
+
+        def worker():
+            try:
+                result = translate_text(
+                    base, api_key, ConfigManager.get_ai_model(),
+                    text, target)
+                error = None
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            self._post(self._apply_translation, dialog, section, button,
+                       status_label, result, error)
+
+        self._track_future(self._executor.submit(worker))
+
+    def _apply_translation(self, dialog, section, button, status_label,
+                           result, error):
+        if self._destroyed:
+            return
+        try:
+            if not dialog.winfo_exists():
+                return
+        except Exception:
+            return
+        status_label.destroy()
+        if error:
+            button.configure(
+                state="normal", text=t("ai.translate", "🌐 翻译"))
+            ctk.CTkLabel(
+                section,
+                text=t("ai.translate_failed", "翻译失败：{error}").format(
+                    error=error),
+                text_color="#e06c75", justify="left",
+                wraplength=690, anchor="w",
+            ).pack(fill="x", pady=(6, 0))
+            return
+        ctk.CTkLabel(
+            section, text="🌐 " + result,
+            justify="left", wraplength=690, anchor="w",
+            text_color=("gray20", "gray85"),
+        ).pack(fill="x", pady=(6, 0))
+        button.configure(
+            state="disabled", text=t("ai.translated", "已翻译"))
+
     def _file_row(self, parent, details, remote_file, dialog):
         row = ctk.CTkFrame(parent)
         row.pack(fill="x", pady=2)
@@ -1605,7 +1661,7 @@ class OnlineBrowserFrame(ctk.CTkFrame):
                 def error_ui(error):
                     try:
                         if parent.winfo_exists():
-                            messagebox.showerror(
+                            showerror(
                                 t("online.error", "在线加载失败：{error}").format(
                                     error=error),
                                 error, parent=parent)

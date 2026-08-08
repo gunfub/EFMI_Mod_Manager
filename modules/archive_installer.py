@@ -342,6 +342,50 @@ def install_zip(
         shutil.rmtree(operation_dir, ignore_errors=True)
 
 
+def install_loose_file(
+        source_path: str, mods_dir: str, disabled_dir: str, preferred_name: str,
+        enabled: bool = True,
+        progress_callback: Optional[Callable[[int, int, str], None]] = None,
+        cancel_event=None) -> InstallResult:
+    """Install a single loose file into a new Mod folder (non-archive install).
+
+    Returns InstallResult with the created folder path; raises
+    ArchiveInstallError on failure, InstallCancelled on user cancel.
+    """
+    source_path = os.path.abspath(source_path)
+    if not os.path.isfile(source_path):
+        raise ArchiveInstallError("文件不存在: {}".format(source_path))
+    roots = (os.path.abspath(mods_dir), os.path.abspath(disabled_dir))
+    for root in roots:
+        if not os.path.isdir(root):
+            raise ArchiveInstallError("目标 Mod 目录不存在: {}".format(root))
+
+    name = validate_mod_name(preferred_name)
+    target_name = unique_target_name(name, roots)
+    target_root = roots[0] if enabled else roots[1]
+    _require_disk_space(target_root, _estimated_disk_bytes(os.path.getsize(source_path), 1))
+
+    inner_name = os.path.basename(source_path).strip().strip(".")
+    inner_name = _INVALID_WINDOWS_CHARS.sub("_", inner_name) or "file"
+
+    target_path = os.path.join(target_root, target_name)
+    temp_target = os.path.join(target_root, ".efmi-install-{}".format(uuid.uuid4().hex))
+    try:
+        os.makedirs(temp_target)
+        _copy_file(source_path, os.path.join(temp_target, inner_name), cancel_event)
+        if progress_callback:
+            progress_callback(1, 1, target_name)
+        os.replace(temp_target, target_path)
+    except InstallCancelled:
+        shutil.rmtree(temp_target, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(temp_target, ignore_errors=True)
+        raise ArchiveInstallError(
+            "安装文件 {} 失败: {}".format(preferred_name, exc)) from exc
+    return InstallResult(target_name, target_path, enabled, True)
+
+
 def cleanup_staging(max_age_seconds: int = 24 * 60 * 60) -> None:
     """Remove abandoned installer staging directories older than one day."""
     staging_parent = os.path.join(APP_DIR, "data", "staging")

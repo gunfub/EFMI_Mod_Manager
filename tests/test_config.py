@@ -121,3 +121,17 @@ def test_sensitive_content_setting_defaults_true_and_persists(
     assert config.ConfigManager.get_hide_sensitive_content() is True
     config.ConfigManager.set_hide_sensitive_content(False)
     assert config.ConfigManager.get_hide_sensitive_content() is False
+
+
+def test_proxy_setting_roundtrip_and_strip(tmp_path, monkeypatch):
+    config_path = tmp_path / "mod_manager_config.json"
+    monkeypatch.setattr(config, "APP_DIR", str(tmp_path))
+    monkeypatch.setattr(config, "CONFIG_PATH", str(config_path))
+
+    assert config.ConfigManager.get_proxy() == ""
+    config.ConfigManager.set_proxy("  http://127.0.0.1:7897  ")
+    assert config.ConfigManager.get_proxy() == "http://127.0.0.1:7897"
+    config.ConfigManager.set_proxy("")
+    assert config.ConfigManager.get_proxy() == ""
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["proxy"] == ""
